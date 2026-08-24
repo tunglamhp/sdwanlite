@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sdwanlite — control panel</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e;
+    --accent: #58a6ff; --green: #3fb950; --red: #f85149; --amber: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    padding: 24px; max-width: 1100px; margin: auto;
+  }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  header .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, #0f2027, #2c5364);
+    display: flex; align-items: center; justify-content: center;
+    color: #00d2ff; font-weight: 800; font-size: 18px;
+    border: 1px solid var(--border);
+  }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: .5px; }
+  h1 span { color: var(--accent); letter-spacing: 6px; font-size: 12px; display: block; font-weight: 500;}
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .card h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--muted); margin-bottom: 12px; display:flex; justify-content: space-between; align-items:center;
+  }
+  .kv { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+  .kv b { font-weight: 600; }
+  .kv span { color: var(--muted); }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .ok   { background: rgba(63,185,80,.15);  color: var(--green); }
+  .bad  { background: rgba(248,81,73,.15);  color: var(--red); }
+  .warn { background: rgba(210,153,34,.15); color: var(--amber); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 5px 6px; border-bottom: 1px solid #21262d; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  footer { margin-top: 20px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">SL</div>
+  <h1>SDWANLite<span>CONTROL PANEL</span></h1>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>Node <span id="uptime" class="badge ok">up</span></h2>
+    <div class="kv"><span>Name</span><b id="node">—</b></div>
+    <div class="kv"><span>Version</span><b id="version">—</b></div>
+    <div class="kv"><span>Uptime</span><b id="uptime-val">—</b></div>
+  </div>
+
+  <div class="card">
+    <h2>Mesh (WireGuard)</h2>
+    <div class="kv"><span>Status</span><b id="mesh-state">—</b></div>
+    <div class="kv"><span>Peers configured</span><b id="mesh-peers">—</b></div>
+    <div class="kv"><span style="font-size:12px">Keypair</span><button onclick="genKeys()" style="background:#21262d;color:#58a6ff;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer">Generate</button></div>
+    <pre id="keys" style="margin-top:8px;font-size:12px;color:var(--muted);white-space:pre-wrap"></pre>
+  </div>
+
+  <div class="card">
+    <h2>BGP</h2>
+    <div class="kv"><span>Status</span><b id="bgp-state">—</b></div>
+    <div class="kv"><span>RIB entries</span><b id="rib-count">0</b></div>
+    <table id="bgp-sessions"><thead><tr><th>Neighbor</th><th>State</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Load balancers — TCP pools</h2>
+    <table id="tcp-pools"><thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Healthy</th><th>Active</th><th>Total</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Load balancers — HTTP pools</h2>
+    <table id="http-pools"><thead><tr><th>Pool</th><th>Host</th><th>Path prefix</th><th>Backends</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<footer>sdwanlite • polling /api every 3s</footer>
+
+<script>
+const fmtUptime = s => `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`;
+const badge = (ok, tOk, tBad) => `<span class="badge ${ok?'ok':'bad'}">${ok?tOk:tBad}</span>`;
+
+async function genKeys() {
+  const r = await fetch('/api/mesh/keypair'); const j = await r.json();
+  document.getElementById('keys').textContent =
+    `private = ${j.private_key}\npublic  = ${j.public_key}`;
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    document.getElementById('node').textContent = s.node;
+    document.getElementById('version').textContent = 'v' + s.version;
+    document.getElementById('uptime-val').textContent = fmtUptime(s.uptime_secs);
+
+    const meshEl = document.getElementById('mesh-state');
+    meshEl.innerHTML = badge(s.mesh_enabled, 'enabled', 'disabled');
+    document.getElementById('mesh-peers').textContent = s.mesh_peers_configured;
+
+    const bgpEl = document.getElementById('bgp-state');
+    bgpEl.innerHTML = badge(s.bgp_enabled, 'enabled', 'disabled');
+    document.getElementById('rib-count').textContent = s.bgp_rib_size;
+    const tbody = document.querySelector('#bgp-sessions tbody');
+    tbody.innerHTML = (s.bgp_sessions || []).map(x =>
+      `<tr><td>${x.neighbor}</td><td>${badge(x.state==='established', x.state, x.state)}</td></tr>`).join('')
+      || '<tr><td colspan=2 style="color:var(--muted)">no sessions</td></tr>';
+
+    const lb = await (await fetch('/api/lb')).json();
+    document.querySelector('#tcp-pools tbody').innerHTML =
+      lb.tcp.flatMap(p => p.backends.map(b => `
+        <tr><td>${p.name}</td><td>${p.algorithm}</td><td>${b.addr}</td>
+        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td></tr>`)).join('')
+      || '<tr><td colspan=6 style="color:var(--muted)">no pools</td></tr>';
+    document.querySelector('#http-pools tbody').innerHTML =
+      lb.http.flatMap(p => p.routes.map(r => `
+        <tr><td>${p.name}</td><td>${r.host||'*'}</td><td>${r.path_prefix||'/'}</td><td>${r.backends}</td></tr>`)).join('')
+      || '<tr><td colspan=4 style="color:var(--muted)">no pools</td></tr>';
+  } catch (e) { console.error(e); }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

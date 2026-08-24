@@ -1,0 +1,22 @@
+[package]
+name = "sdwanlite-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sdwanlited"
+path = "src/main.rs"
+
+[dependencies]
+sdwanlite-core = { path = "../core" }
+sdwanlite-lb = { path = "../lb" }
+serde_json = "1"
+sdwanlite-mesh = { path = "../mesh" }
+sdwanlite-bgp = { path = "../bgp" }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

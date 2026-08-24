@@ -1,0 +1,30 @@
+[general]
+name = "sdwanlite-demo"
+api_addr = "127.0.0.1"
+api_port = 18080
+
+[mesh]
+enabled = false
+listen_port = 51821
+
+[bgp]
+enabled = false
+
+[[lb.tcp]]
+name = "demo-tcp"
+listen = "127.0.0.1:9000"
+algorithm = "least_connections"
+health_interval_secs = 3
+health_timeout_secs = 2
+backends = ["127.0.0.1:9101", "127.0.0.1:9999"]
+
+[[lb.http]]
+name = "demo-http"
+listen = "127.0.0.1:9090"
+health_interval_secs = 3
+health_timeout_secs = 2
+
+[[lb.http.routes]]
+host = ""
+path_prefix = "/"
+backends = ["127.0.0.1:9201", "127.0.0.1:9998"]

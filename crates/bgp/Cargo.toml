@@ -1,0 +1,10 @@
+[package]
+name = "sdwanlite-bgp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sdwanlite-core = { path = "../core" }
+tokio = { workspace = true, features = ["net", "io-util", "time", "macros", "rt"] }
+tracing = { workspace = true }
