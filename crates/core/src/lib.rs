@@ -178,6 +178,14 @@ pub struct BgpNeighbor {
     /// Prefixes advertised to this neighbor (exact match); None = all.
     #[serde(default)]
     pub export_allowlist: Option<Vec<String>>,
+    /// LOCAL_PREF value attached to routes learned from this neighbor
+    /// (higher = preferred). Default 100.
+    #[serde(default = "default_local_pref")]
+    pub local_pref: u32,
+}
+
+fn default_local_pref() -> u32 {
+    100
 }
 
 impl BgpNeighbor {
