@@ -83,6 +83,10 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
     // Account: restore persisted credentials when available, else create and
     // persist them next to the key file. Avoids LE account rate limits.
     let creds_path = format!("{}.account.json", cfg.key_file);
+    let any_wildcard = cfg.domains.iter().any(|d| d.starts_with("*."));
+    let http: Box<dyn instant_acme::HttpClient> = Box::new(
+        crate::WildcardHttpClient::try_new(any_wildcard).expect("wildcard client"),
+    );
     let (account, creds_json) = match tokio::fs::read_to_string(&creds_path).await {
         Ok(raw) => match serde_json::from_str::<instant_acme::AccountCredentials>(&raw) {
             Ok(creds) => match Account::from_credentials(creds).await {
@@ -92,15 +96,15 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
                 }
                 Err(e) => {
                     tracing::warn!("stored acme credentials unusable ({e}); creating new account");
-                    create_account(cfg).await?
+                    create_account_with_http(cfg, http).await?
                 }
             },
             Err(e) => {
                 tracing::warn!("stored acme credentials corrupt ({e}); creating new account");
-                create_account(cfg).await?
+                create_account_with_http(cfg, http).await?
             }
         },
-        Err(_) => create_account(cfg).await?,
+        Err(_) => create_account_with_http(cfg, http).await?,
     };
     // keep the credentials file in sync with whatever we ended up using
     let existing = tokio::fs::read_to_string(&creds_path).await.ok();
@@ -111,8 +115,11 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
         tokio::fs::write(&creds_path, &creds_json).await?;
     }
 
-    let identifiers: Vec<Identifier> =
-        cfg.domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
+    let identifiers: Vec<Identifier> = cfg
+        .domains
+        .iter()
+        .map(|d| Identifier::Dns(d.trim_start_matches("*.").to_string()))
+        .collect();
     let mut order = account.new_order(&NewOrder { identifiers: &identifiers }).await?;
 
     // collect challenges: HTTP-01 (serve locally) or DNS-01 (Cloudflare TXT)
@@ -236,8 +243,11 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
     Ok((pem, key.serialize_pem()))
 }
 
-async fn create_account(cfg: &Acme) -> Result<(Account, String), AcmeError> {
-    let (account, creds) = Account::create(
+async fn create_account_with_http(
+    cfg: &Acme,
+    http: Box<dyn instant_acme::HttpClient>,
+) -> Result<(Account, String), AcmeError> {
+    let (account, creds) = Account::create_with_http(
         &NewAccount {
             contact: &[Box::leak(format!("mailto:{}", cfg.email).into_boxed_str())],
             terms_of_service_agreed: true,
@@ -245,6 +255,7 @@ async fn create_account(cfg: &Acme) -> Result<(Account, String), AcmeError> {
         },
         &cfg.directory_url,
         None,
+        http,
     )
     .await?;
     let json = serde_json::to_string(&creds).map_err(|e| AcmeError::Protocol(e.to_string()))?;
