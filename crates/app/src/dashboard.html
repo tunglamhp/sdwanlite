@@ -69,6 +69,7 @@
     <div class="kv"><span>Peers configured</span><b id="mesh-peers">—</b></div>
     <div class="kv"><span style="font-size:12px">Keypair</span><button onclick="genKeys()" style="background:#21262d;color:#58a6ff;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer">Generate</button></div>
     <pre id="keys" style="margin-top:8px;font-size:12px;color:var(--muted);white-space:pre-wrap"></pre>
+    <table id="wg-peers"><thead><tr><th>Peer (key)</th><th>RX/TX</th><th>Last handshake</th></tr></thead><tbody></tbody></table>
   </div>
 
   <div class="card">
@@ -80,7 +81,7 @@
 
   <div class="card" style="grid-column: 1 / -1;">
     <h2>Load balancers — TCP pools</h2>
-    <table id="tcp-pools"><thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Healthy</th><th>Active</th><th>Total</th></tr></thead><tbody></tbody></table>
+    <table id="tcp-pools"><thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Healthy</th><th>Active</th><th>Total</th><th>Pool active</th><th>Rejected</th></tr></thead><tbody></tbody></table>
   </div>
 
   <div class="card" style="grid-column: 1 / -1;">
@@ -117,14 +118,16 @@ async function refresh() {
     document.getElementById('rib-count').textContent = s.bgp_rib_size;
     const tbody = document.querySelector('#bgp-sessions tbody');
     tbody.innerHTML = (s.bgp_sessions || []).map(x =>
-      `<tr><td>${x.neighbor}</td><td>${badge(x.state==='established', x.state, x.state)}</td></tr>`).join('')
+      `<tr><td>${x.neighbor} ${x.remote_as?`(AS${x.remote_as})`:''}</td>
+       <td>${badge(x.state==='established', x.state+' · '+x.prefixes_received+' pf', x.state)}</td></tr>`).join('')
       || '<tr><td colspan=2 style="color:var(--muted)">no sessions</td></tr>';
 
     const lb = await (await fetch('/api/lb')).json();
     document.querySelector('#tcp-pools tbody').innerHTML =
       lb.tcp.flatMap(p => p.backends.map(b => `
         <tr><td>${p.name}</td><td>${p.algorithm}</td><td>${b.addr}</td>
-        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td></tr>`)).join('')
+        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td>
+        <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`)).join('')
       || '<tr><td colspan=6 style="color:var(--muted)">no pools</td></tr>';
     document.querySelector('#http-pools tbody').innerHTML =
       lb.http.flatMap(p => p.routes.map(r => `
@@ -132,7 +135,20 @@ async function refresh() {
       || '<tr><td colspan=4 style="color:var(--muted)">no pools</td></tr>';
   } catch (e) { console.error(e); }
 }
+async function refreshWg() {
+  try {
+    const w = await (await fetch('/api/mesh/status')).json();
+    const tb = document.querySelector('#wg-peers tbody');
+    tb.innerHTML = !w.available ? '<tr><td colspan=3 style="color:var(--muted)">wg tools unavailable on this host</td></tr>'
+      : (w.peers || []).map(p => `<tr>
+          <td title="${p.public_key}">${p.public_key.slice(0,12)}…<br>${p.endpoint||'—'}</td>
+          <td>${p.rx_bytes}/${p.tx_bytes}</td>
+          <td>${p.latest_handshake_secs_ago!=null ? p.latest_handshake_secs_ago+'s ago' : badge(false,'never','never')}</td></tr>`).join('')
+        || '<tr><td colspan=3 style="color:var(--muted)">no peers configured</td></tr>';
+  } catch {}
+}
 refresh();
+refreshWg(); setInterval(refreshWg, 10000);
 setInterval(refresh, 3000);
 </script>
 </body>

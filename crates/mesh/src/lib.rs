@@ -83,6 +83,67 @@ pub fn render_wg_config(ifname: &str, mesh: &MeshConfig) -> Result<String, MeshE
     Ok(out)
 }
 
+/// Render a config suitable for `wg setconf` (no ListenPort/Address lines,
+/// no [Interface] header - see wg(8)).
+pub fn render_wg_setconf(mesh: &MeshConfig) -> Result<String, MeshError> {
+    if mesh.private_key.is_empty() {
+        return Err(MeshError::BadKey);
+    }
+    decode_key(&mesh.private_key)?;
+    let mut out = format!("private_key = {}\nlisten_port = {}\n", mesh.private_key.trim(), mesh.listen_port);
+    for peer in &mesh.peers {
+        out.push_str(&format!("\n[Peer]\npublic_key = {}\n", peer.public_key));
+        if let Some(ep) = &peer.endpoint {
+            out.push_str(&format!("endpoint = {ep}\n"));
+        }
+        out.push_str(&format!("allowed_ips = {}\n", peer.allowed_ips.join(", ")));
+        if peer.keepalive_secs > 0 {
+            out.push_str(&format!("persistent_keepalive = {}\n", peer.keepalive_secs));
+        }
+    }
+    Ok(out)
+}
+
+/// Pure, cross-platform configuration validation.
+pub fn validate(mesh: &MeshConfig) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    if mesh.private_key.is_empty() {
+        problems.push("private_key is empty".into());
+    } else if decode_key(&mesh.private_key).is_err() {
+        problems.push("private_key is not valid base64 key material".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for p in &mesh.peers {
+        if decode_key(&p.public_key).is_err() {
+            problems.push(format!("peer '{}': public_key is invalid", p.name));
+        }
+        if !seen.insert(p.public_key.clone()) {
+            problems.push(format!("peer '{}': duplicate public_key", p.name));
+        }
+        for a in &p.allowed_ips {
+            let ok = (|| {
+                let (ip, bits) = a.split_once('/')?;
+                ip.parse::<std::net::IpAddr>().ok()?;
+                bits.parse::<u8>().ok()?;
+                Some(())
+            })()
+            .is_some();
+            if !ok {
+                problems.push(format!("peer '{}': allowed_ips entry '{a}' is not a valid CIDR", p.name));
+            }
+        }
+        // endpoint sanity when present
+        if let Some(ep) = &p.endpoint {
+            if ep.rsplit(':').next().map(|port| port.parse::<u16>().is_err()).unwrap_or(true)
+                && !ep.contains(':')
+            {
+                problems.push(format!("peer '{}': endpoint '{ep}' must be host:port", p.name));
+            }
+        }
+    }
+    if problems.is_empty() { Ok(()) } else { Err(problems) }
+}
+
 /// Apply the mesh configuration with `wg-quick up <path>` (Linux only).
 pub async fn apply(cfg: &Config, workdir: &std::path::Path) -> Result<(), MeshError> {
     #[cfg(not(target_os = "linux"))]
@@ -103,8 +164,11 @@ pub async fn apply(cfg: &Config, workdir: &std::path::Path) -> Result<(), MeshEr
 
 /// Query live WireGuard status via `wg show all dump` and parse it.
 pub async fn status() -> Result<Vec<WgPeerStatus>, MeshError> {
-    let out = run_capture("wg", &["show", "all", "dump"]).await?;
-    Ok(parse_wg_dump(&out))
+    match run_capture("wg", &["show", "all", "dump"]).await {
+        Ok(out) => Ok(parse_wg_dump(&out)),
+        Err(MeshError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -144,6 +208,65 @@ fn parse_wg_dump(dump: &str) -> Vec<WgPeerStatus> {
         });
     }
     peers
+}
+
+/// Apply a full peer/key configuration to an existing interface via `wg setconf`.
+pub async fn apply_setconf(mesh: &MeshConfig) -> Result<(), MeshError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = mesh;
+        Err(MeshError::UnsupportedPlatform)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use tokio::io::AsyncWriteExt;
+        let conf = render_wg_setconf(mesh)?;
+        let mut child = tokio::process::Command::new("wg")
+            .args(["setconf", "sdwanlite0"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(conf.as_bytes()).await?;
+        }
+        let out = child.wait().await?;
+        if out.success() { Ok(()) } else { Err(MeshError::CommandFailed("wg setconf failed".into())) }
+    }
+}
+
+/// Add or update one peer on the running interface.
+pub async fn add_peer(peer: &Peer) -> Result<(), MeshError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = peer;
+        Err(MeshError::UnsupportedPlatform)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = vec!["set".to_string(), "sdwanlite0".to_string(), "peer".to_string(), peer.public_key.clone()];
+        if let Some(ep) = &peer.endpoint {
+            args.extend(["endpoint".into(), ep.clone()]);
+        }
+        if !peer.allowed_ips.is_empty() {
+            args.extend(["allowed-ips".into(), peer.allowed_ips.join(",")]);
+        }
+        if peer.keepalive_secs > 0 {
+            args.extend(["persistent-keepalive".into(), peer.keepalive_secs.to_string()]);
+        }
+        run("wg", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
+    }
+}
+
+/// Remove one peer from the running interface.
+pub async fn remove_peer(public_key_b64: &str) -> Result<(), MeshError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = public_key_b64;
+        Err(MeshError::UnsupportedPlatform)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        run("wg", &["set", "sdwanlite0", "peer", public_key_b64, "remove"]).await
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -226,5 +349,62 @@ mod tests {
     fn rejects_empty_private_key() {
         let mesh = Mesh::default();
         assert!(render_wg_config("x", &mesh).is_err());
+    }
+
+    #[test]
+    fn validate_good_and_bad() {
+        let kp = generate_keypair();
+        let good = Mesh {
+            enabled: true,
+            private_key: kp.private_b64.clone(),
+            listen_port: 51820,
+            peers: vec![Peer {
+                name: "b".into(),
+                public_key: kp.public_b64.clone(),
+                endpoint: Some("203.0.113.2:51820".into()),
+                allowed_ips: vec!["10.100.0.2/32".into()],
+                keepalive_secs: 0,
+            }],
+        };
+        assert!(validate(&good).is_ok());
+
+        let bad = Mesh {
+            enabled: true,
+            private_key: "not-base64!!".into(),
+            listen_port: 51820,
+            peers: vec![
+                Peer { name: "dup".into(), public_key: kp.public_b64.clone(), endpoint: None, allowed_ips: vec!["garbage".into()], keepalive_secs: 0 },
+                Peer { name: "dup".into(), public_key: kp.public_b64.clone(), endpoint: None, allowed_ips: vec![], keepalive_secs: 0 },
+            ],
+        };
+        let problems = validate(&bad).unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("private_key")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("duplicate")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("allowed_ips")), "{problems:?}");
+    }
+
+    #[test]
+    fn setconf_render_differs_from_wg_quick() {
+        let kp = generate_keypair();
+        let mesh = Mesh {
+            enabled: true,
+            private_key: kp.private_b64.clone(),
+            listen_port: 51820,
+            peers: vec![],
+        };
+        let sc = render_wg_setconf(&mesh).unwrap();
+        assert!(!sc.contains("[Interface]"));
+        assert!(sc.starts_with("private_key"));
+    }
+
+    #[test]
+    fn parses_dump_with_never_handshaked_peer() {
+        // interface pubkey psk endpoint allowedips handshake rx tx ka
+        let dump = "interface\tpubkey\tpsk\tendpoint\tallowed\thandshake\trx\ttx\tka\nsdwanlite0\tKEYA\t(none)\t203.0.113.2:51820\t10.100.0.2/32\t1700000000\t1000\t2000\t25\nsdwanlite0\tKEYB\t(none)\t(none)\t10.100.0.3/32\t0\t0\t0\t0\n";
+        let peers = parse_wg_dump(dump);
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].rx_bytes, 1000);
+        assert!(peers[0].latest_handshake_secs_ago.is_some());
+        assert!(peers[1].latest_handshake_secs_ago.is_none());
     }
 }

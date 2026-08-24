@@ -1,9 +1,10 @@
 //! Layer-4 TCP load balancer with transparent bidirectional forwarding.
 
-use crate::{select_backend, spawn_health_checker, Backend};
+use crate::{select_backend, spawn_health_checker, Backend, StopFlag};
 use sdwanlite_core::{Algorithm, TcpPool};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use std::time::Duration;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -12,8 +13,12 @@ pub struct TcpLoadBalancer {
     pub name: String,
     listener: TcpListener,
     algo: Algorithm,
-    backends: Vec<Arc<Backend>>,
+    backends: RwLock<Vec<Arc<Backend>>>,
     counter: AtomicU64,
+    stop: Arc<StopFlag>,
+    max_conns: AtomicUsize,
+    active_conns: AtomicUsize,
+    rejected_conns: AtomicU64,
 }
 
 impl TcpLoadBalancer {
@@ -28,12 +33,17 @@ impl TcpLoadBalancer {
             name: pool.name.clone(),
             listener,
             algo: pool.algorithm,
-            backends,
+            backends: RwLock::new(backends),
             counter: AtomicU64::new(0),
+            stop: Arc::new(StopFlag::default()),
+            max_conns: AtomicUsize::new(0), // 0 = unlimited
+            active_conns: AtomicUsize::new(0),
+            rejected_conns: AtomicU64::new(0),
         });
+        let hc_backends = lb.backends.read().await.clone();
         spawn_health_checker(
             pool.name.clone(),
-            lb.backends.clone(),
+            hc_backends,
             Duration::from_secs(pool.health_interval_secs),
             Duration::from_secs(pool.health_timeout_secs),
         );
@@ -41,24 +51,78 @@ impl TcpLoadBalancer {
         Ok(lb)
     }
 
-    pub fn backends(&self) -> &[Arc<Backend>] {
-        &self.backends
+    /// Snapshot of current backends.
+    pub async fn backends(&self) -> Vec<Arc<Backend>> {
+        self.backends.read().await.clone()
+    }
+
+    /// Add a backend at runtime. Returns false if it already exists.
+    pub async fn add_backend(&self, addr: std::net::SocketAddr) -> bool {
+        let mut b = self.backends.write().await;
+        if b.iter().any(|x| x.addr == addr) {
+            return false;
+        }
+        b.push(Backend::new(addr));
+        true
+    }
+
+    /// Remove a backend at runtime by address.
+    pub async fn remove_backend(&self, addr: std::net::SocketAddr) -> bool {
+        let mut b = self.backends.write().await;
+        let before = b.len();
+        b.retain(|x| x.addr != addr);
+        b.len() != before
     }
 
     pub fn algorithm(&self) -> Algorithm {
         self.algo
     }
 
+    /// Set the maximum concurrent client connections (0 = unlimited).
+    pub fn set_max_conns(&self, max: usize) {
+        self.max_conns.store(max, Ordering::Relaxed);
+    }
+
+    pub fn active_conns(&self) -> usize {
+        self.active_conns.load(Ordering::Relaxed)
+    }
+
+    pub fn rejected_conns(&self) -> u64 {
+        self.rejected_conns.load(Ordering::Relaxed)
+    }
+
+    pub fn stop(&self) {
+        self.stop.stop();
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
+    }
+
     pub async fn serve(self: Arc<Self>) {
         loop {
+            if self.stop.is_stopped() {
+                tracing::info!(pool = %self.name, "tcp load balancer stopping");
+                return;
+            }
             match self.listener.accept().await {
                 Ok((client, _peer)) => {
+                    let max = self.max_conns.load(Ordering::Relaxed);
+                    if max > 0 && self.active_conns.load(Ordering::Relaxed) >= max {
+                        self.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                        drop(client); // close immediately
+                        continue;
+                    }
+                    self.active_conns.fetch_add(1, Ordering::Relaxed);
+
                     let this = self.clone();
                     tokio::spawn(async move {
-                        let pool = this.name.clone();
+                        let pool_name = this.name.clone();
+                        let tracker = Arc::clone(&this);
                         if let Err(e) = this.handle(client).await {
-                            tracing::debug!(pool = %pool, error = %e, "connection ended with error");
+                            tracing::debug!(pool = %pool_name, error = %e, "connection ended with error");
                         }
+                        tracker.active_conns.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
                 Err(e) => {
@@ -70,9 +134,10 @@ impl TcpLoadBalancer {
     }
 
     async fn handle(self: Arc<Self>, mut client: TcpStream) -> std::io::Result<()> {
-        let max_tries = self.backends.len().max(1);
+        let snapshot = self.backends.read().await.clone();
+        let max_tries = snapshot.len().max(1);
         for _ in 0..max_tries {
-            let Some(be) = select_backend(&self.backends, self.algo, &self.counter) else {
+            let Some(be) = select_backend(&snapshot, self.algo, &self.counter) else {
                 break;
             };
             match be.connect().await {

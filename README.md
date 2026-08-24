@@ -8,9 +8,9 @@ Original implementation — not a fork of any existing appliance.
 | Crate | Purpose |
 |---|---|
 | `core` | TOML configuration model, shared types |
-| `lb` | L4 TCP load balancer (round-robin / least-connections / random) + HTTP/1.1 reverse proxy with host/path routing, health checks, X-Forwarded-For |
-| `mesh` | WireGuard mesh control plane: native Curve25519 keypairs, `wg-quick` config rendering, apply/status via `wg` tools (Linux) |
-| `bgp` | Minimal RFC 4271 speaker for labs: OPEN/KEEPALIVE/UPDATE/NOTIFICATION, IPv4-unicast NLRI, small RIB |
+| `lb` | L4 TCP load balancer (round-robin / least-connections / random) + HTTP/1.1 reverse proxy with TLS termination, host/path routing, health checks, X-Forwarded-For, connection limits, graceful stop, runtime backend add/remove |
+| `mesh` | WireGuard mesh control plane: native Curve25519 keypairs, `wg-quick` + `wg setconf` rendering, live peer add/remove, config validation, status via `wg` tools (Linux) |
+| `bgp` | RFC 4271 lab speaker: capabilities negotiation (RFC 5492, AS4), route refresh (RFC 2918), negotiated hold timers, IPv4-unicast NLRI, RIB with import allowlist |
 | `app` (`sdwanlited`) | REST API + embedded dark-theme dashboard |
 
 ## Build

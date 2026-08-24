@@ -1,9 +1,9 @@
-//! HTTP/1.1 reverse proxy with host/path routing.
+//! HTTP/1.1 reverse proxy with host/path routing and optional TLS termination.
 
-use crate::{select_backend, spawn_health_checker, Backend};
+use crate::{select_backend, spawn_health_checker, Backend, Conn, StopFlag};
 use sdwanlite_core::{Algorithm, HttpPool};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,11 +21,23 @@ pub struct HttpLoadBalancer {
     listener: TcpListener,
     algo: Algorithm,
     routes: Vec<Arc<Route>>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    stop: Arc<StopFlag>,
+    max_conns: AtomicUsize,
+    active_conns: AtomicUsize,
+    rejected_conns: AtomicU64,
 }
 
 impl HttpLoadBalancer {
     pub async fn bind(pool: &HttpPool) -> std::io::Result<Arc<Self>> {
         let listener = TcpListener::bind(&pool.listen).await?;
+        let tls = match &pool.tls {
+            Some(t) => Some(tokio_rustls::TlsAcceptor::from(crate::load_tls_server_config(
+                std::path::Path::new(&t.cert_file),
+                std::path::Path::new(&t.key_file),
+            )?)),
+            None => None,
+        };
         let routes: Vec<Arc<Route>> = pool
             .routes
             .iter()
@@ -55,8 +67,13 @@ impl HttpLoadBalancer {
             listener,
             algo: Algorithm::LeastConnections,
             routes,
+            tls,
+            stop: Arc::new(StopFlag::default()),
+            max_conns: AtomicUsize::new(0), // 0 = unlimited
+            active_conns: AtomicUsize::new(0),
+            rejected_conns: AtomicU64::new(0),
         });
-        tracing::info!(pool = %pool.name, listen = %pool.listen, "http load balancer listening");
+        tracing::info!(pool = %pool.name, listen = %pool.listen, tls = lb.tls.is_some(), "http load balancer listening");
         Ok(lb)
     }
 
@@ -68,16 +85,65 @@ impl HttpLoadBalancer {
             .collect()
     }
 
+    /// Set the maximum concurrent client connections (0 = unlimited).
+    pub fn set_max_conns(&self, max: usize) {
+        self.max_conns.store(max, Ordering::Relaxed);
+    }
+
+    pub fn active_conns(&self) -> usize {
+        self.active_conns.load(Ordering::Relaxed)
+    }
+
+    pub fn rejected_conns(&self) -> u64 {
+        self.rejected_conns.load(Ordering::Relaxed)
+    }
+
+    pub fn stop(&self) {
+        self.stop.stop();
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
+    }
+
     pub async fn serve(self: Arc<Self>) {
         loop {
+            if self.stop.is_stopped() {
+                tracing::info!(pool = %self.name, "http load balancer stopping");
+                return;
+            }
             match self.listener.accept().await {
-                Ok((client, peer)) => {
+                Ok((sock, peer)) => {
+                    // connection limit
+                    let max = self.max_conns.load(Ordering::Relaxed);
+                    if max > 0 && self.active_conns.load(Ordering::Relaxed) >= max {
+                        self.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                        drop(sock); // close immediately
+                        continue;
+                    }
+                    self.active_conns.fetch_add(1, Ordering::Relaxed);
+
+                    // optional TLS termination
+                    let conn: Conn = match (&self.tls, sock) {
+                        (Some(acceptor), s) => match acceptor.accept(s).await {
+                            Ok(t) => Conn::Tls(Box::new(t)),
+                            Err(e) => {
+                                tracing::debug!(error = %e, "tls handshake failed");
+                                self.active_conns.fetch_sub(1, Ordering::Relaxed);
+                                continue;
+                            }
+                        },
+                        (None, s) => Conn::Plain(s),
+                    };
+
                     let this = self.clone();
                     tokio::spawn(async move {
-                        let pool = this.name.clone();
-                        if let Err(e) = this.handle(client, peer.ip()).await {
-                            tracing::debug!(pool = %pool, error = %e, "http conn error");
+                        let pool_name = this.name.clone();
+                        let tracker = Arc::clone(&this);
+                        if let Err(e) = this.handle(conn, peer.ip()).await {
+                            tracing::debug!(pool = %pool_name, error = %e, "http conn error");
                         }
+                        tracker.active_conns.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
                 Err(e) => {
@@ -90,7 +156,7 @@ impl HttpLoadBalancer {
 
     async fn handle(
         self: Arc<Self>,
-        mut client: TcpStream,
+        mut client: Conn,
         peer_ip: IpAddr,
     ) -> std::io::Result<()> {
         // Read until end of request head (bounded).
@@ -163,7 +229,7 @@ impl HttpLoadBalancer {
 }
 
 /// Pump raw bytes both directions until either side closes or errors.
-async fn pump(a: &mut TcpStream, b: &mut TcpStream) -> std::io::Result<()> {
+async fn pump(a: &mut Conn, b: &mut TcpStream) -> std::io::Result<()> {
     let (mut a_rd, mut a_wr) = tokio::io::split(a);
     let (mut b_rd, mut b_wr) = tokio::io::split(b);
 
@@ -216,7 +282,7 @@ fn rewrite_head_with_headers(head: Vec<u8>, client_ip: &str) -> Vec<u8> {
     out
 }
 
-async fn write_simple_response(sock: &mut TcpStream, code: u16, msg: &str) -> std::io::Result<()> {
+async fn write_simple_response(sock: &mut Conn, code: u16, msg: &str) -> std::io::Result<()> {
     let body = format!("{{\"error\":\"{}\"}}", msg);
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
