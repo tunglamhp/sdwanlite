@@ -221,3 +221,41 @@ impl Config {
         c
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_config() {
+        let raw = r#"
+[general]
+name = "edge-1"
+api_port = 9000
+
+[[lb.tcp]]
+name = "web"
+listen = "0.0.0.0:80"
+algorithm = "least_connections"
+backends = ["10.0.0.1:80", "10.0.0.2:80"]
+"#;
+        let cfg: Config = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.general.name, "edge-1");
+        assert_eq!(cfg.general.api_port, 9000);
+        assert_eq!(cfg.lb.tcp_pools[0].algorithm, Algorithm::LeastConnections);
+        assert_eq!(cfg.lb.tcp_pools[0].backends.len(), 2);
+    }
+
+    #[test]
+    fn sample_config_parses() {
+        let s = toml::to_string(&Config::sample()).unwrap();
+        let cfg: Config = toml::from_str(&s).unwrap();
+        assert_eq!(cfg.lb.tcp_pools.len(), 1);
+    }
+
+    #[test]
+    fn invalid_toml_is_rejected() {
+        let err = Config::load(Path::new("definitely-missing-file.toml"));
+        assert!(err.is_err());
+    }
+}

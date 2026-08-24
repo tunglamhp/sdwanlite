@@ -1,4 +1,4 @@
-# SDWANLite
+# <img src="docs/sdwanlite-logo.svg" alt="SDWANLite logo" width="72" align="top"/> SDWANLite
 
 A clean-room, learning-oriented SD-WAN edge + load balancer written in Rust.
 Original implementation — not a fork of any existing appliance.

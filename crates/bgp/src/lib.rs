@@ -249,13 +249,15 @@ async fn read_message(
         if buf.len() >= 19 {
             let len = u16::from_be_bytes([buf[16], buf[17]]) as usize;
             if len >= 19 && buf.len() >= len {
+                if buf[..16] != MARKER {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "bad BGP marker",
+                    ));
+                }
                 let msg_type = buf[18];
                 let body = buf[19..len].to_vec();
                 buf.drain(..len);
-
-                if buf[..16] != MARKER && len > 0 {
-                    // note: drained above; validate on next iteration slice instead
-                }
                 return Ok(RawMessage { msg_type, body });
             }
             if len < 19 {
@@ -331,6 +333,7 @@ fn encode_update(
     let mut body = Vec::new();
     body.extend_from_slice(&wd_len.to_be_bytes());
     body.extend_from_slice(&attr_len.to_be_bytes());
+    body.extend_from_slice(&wd);
     body.extend_from_slice(&attrs);
     for p in announced {
         body.extend_from_slice(&p.encode());
@@ -341,24 +344,81 @@ fn encode_update(
     m
 }
 
+fn parse_prefixes(buf: &[u8]) -> Vec<Prefix> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < buf.len() {
+        let bits = buf[pos];
+        let bytes = ((bits as usize) + 7) / 8;
+        if bytes > 4 || pos + 1 + bytes > buf.len() {
+            break; // malformed tail; stop conservatively
+        }
+        let mut octets = [0u8; 4];
+        octets[..bytes].copy_from_slice(&buf[pos + 1..pos + 1 + bytes]);
+        out.push(Prefix { bits, octets });
+        pos += 1 + bytes;
+    }
+    out
+}
+
 fn parse_update(body: &[u8]) -> (Vec<Prefix>, Vec<Prefix>) {
+    if body.len() < 4 {
+        return (Vec::new(), Vec::new());
+    }
     let g16 = |b: &[u8], i: usize| u16::from_be_bytes([b[i], b[i + 1]]);
 
     let wd_len = g16(body, 0) as usize;
     let attr_len = g16(body, 2) as usize;
-    let mut pos = 4 + wd_len + attr_len;
-
-    let mut announced = Vec::new();
-    while pos < body.len() {
-        let bits = body[pos];
-        let bytes = ((bits as usize) + 7) / 8;
-        if pos + 1 + bytes > body.len() || bytes > 4 {
-            break;
-        }
-        let mut octets = [0u8; 4];
-        octets[..bytes].copy_from_slice(&body[pos + 1..pos + 1 + bytes]);
-        announced.push(Prefix { bits, octets });
-        pos += 1 + bytes;
+    if 4 + wd_len + attr_len > body.len() {
+        return (Vec::new(), Vec::new());
     }
-    (announced, Vec::new()) // withdrawals parsed in a future iteration
+
+    let withdrawn = parse_prefixes(&body[4..4 + wd_len]);
+    let announced = parse_prefixes(&body[4 + wd_len + attr_len..]);
+    (announced, withdrawn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_roundtrip() {
+        let p = Prefix::parse("10.1.0.0/16").unwrap();
+        assert_eq!(p.bits, 16);
+        assert_eq!(p.octets, [10, 1, 0, 0]);
+        assert_eq!(p.to_string(), "10.1.0.0/16");
+    }
+
+    #[test]
+    fn update_encode_parse_roundtrip() {
+        let announced = vec![
+            Prefix::parse("192.168.1.0/24").unwrap(),
+            Prefix::parse("10.0.0.0/8").unwrap(),
+        ];
+        let withdrawn = vec![Prefix::parse("172.16.0.0/12").unwrap()];
+        let msg = encode_update(&announced, &withdrawn, 0x0a000001, 65000);
+
+        // strip header
+        let total = u16::from_be_bytes([msg[16], msg[17]]) as usize;
+        assert_eq!(msg_type_of(&msg), MSG_UPDATE);
+        let body = &msg[19..total];
+
+        let (got_ann, got_wd) = parse_update(body);
+        assert_eq!(got_wd, withdrawn);
+        assert_eq!(got_ann, announced);
+    }
+
+    fn msg_type_of(m: &[u8]) -> u8 {
+        m[18]
+    }
+
+    #[test]
+    fn open_message_shape() {
+        let m = encode_open(65001, 180, 0x0a000001);
+        let len = u16::from_be_bytes([m[16], m[17]]) as usize;
+        assert_eq!(u16::from_be_bytes([m[20], m[21]]), 65001); // ASN (after version byte)
+        assert_eq!(&m[..16], &MARKER);
+    }
+}
+

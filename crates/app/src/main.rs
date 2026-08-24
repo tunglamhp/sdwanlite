@@ -67,16 +67,14 @@ async fn main() -> Result<()> {
         bgp,
     });
 
-    // Serve load balancer traffic
-    for pool in &state.tcp_pools.clone() {
+    for pool in &state.tcp_pools {
         let p = pool.clone();
         tokio::spawn(async move { p.serve().await });
     }
-    for pool in &state.http_pools.clone() {
+    for pool in &state.http_pools {
         let p = pool.clone();
         tokio::spawn(async move { p.serve().await });
     }
-
     // Optional: apply WireGuard mesh at boot
     if config.mesh.enabled && !config.mesh.private_key.is_empty() {
         match sdwanlite_mesh::apply(&config, std::path::Path::new("/etc/wireguard")).await {

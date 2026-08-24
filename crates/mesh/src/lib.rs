@@ -7,7 +7,8 @@
 
 use base64::Engine;
 use rand::rngs::OsRng;
-use sdwanlite_core::{Config, Mesh as MeshConfig};
+use sdwanlite_core::{Mesh as MeshConfig, Peer};
+use sdwanlite_core::Config;
 use std::fmt;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -185,3 +186,45 @@ impl fmt::Display for KeyPair {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdwanlite_core::Mesh;
+
+    #[test]
+    fn keypair_is_valid_and_derivable() {
+        let kp = generate_keypair();
+        let derived = public_from_private(&kp.private_b64).unwrap();
+        assert_eq!(derived, kp.public_b64);
+    }
+
+    #[test]
+    fn renders_wg_quick_config() {
+        let kp = generate_keypair();
+        let mesh = Mesh {
+            enabled: true,
+            private_key: kp.private_b64.clone(),
+            listen_port: 51820,
+            peers: vec![Peer {
+                name: "site-b".into(),
+                public_key: "invalid".into(), // render does not validate peer keys
+                endpoint: Some("203.0.113.2:51820".into()),
+                allowed_ips: vec!["10.100.0.2/32".into()],
+                keepalive_secs: 25,
+            }],
+        };
+        let conf = render_wg_config("sdwanlite0", &mesh).unwrap();
+        assert!(conf.contains(&format!("PrivateKey = {}", kp.private_b64)));
+        assert!(conf.contains("ListenPort = 51820"));
+        assert!(conf.contains("[Peer]"));
+        assert!(conf.contains("AllowedIPs = 10.100.0.2/32"));
+        assert!(conf.contains("PersistentKeepalive = 25"));
+    }
+
+    #[test]
+    fn rejects_empty_private_key() {
+        let mesh = Mesh::default();
+        assert!(render_wg_config("x", &mesh).is_err());
+    }
+}
