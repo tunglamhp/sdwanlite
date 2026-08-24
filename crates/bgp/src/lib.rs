@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 const MARKER: [u8; 16] = [0xFF; 16];
@@ -119,6 +119,23 @@ pub struct BgpSpeaker {
     pub sessions: RwLock<HashMap<String, SessionInfo>>,
     /// Best route per prefix (lowest AS-path length wins; ties -> first seen).
     pub rib: RwLock<HashMap<Prefix, RibEntry>>,
+    /// Outbound channel per established session for reflected updates.
+    reflect_tx: RwLock<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>,
+}
+
+impl BgpSpeaker {
+    fn cluster_id(&self) -> u32 {
+        let from_cfg = self.cfg.cluster_id.parse::<std::net::Ipv4Addr>().ok();
+        match from_cfg {
+            Some(ip) => u32::from(ip),
+            None => self
+                .cfg
+                .router_id
+                .parse::<std::net::Ipv4Addr>()
+                .map(u32::from)
+                .unwrap_or(0),
+        }
+    }
 }
 
 /// One candidate route.
@@ -153,7 +170,12 @@ impl BgpSpeaker {
             .iter()
             .map(|n| (n.ip.clone(), SessionInfo::default()))
             .collect();
-        Arc::new(Self { cfg, sessions: RwLock::new(sessions), rib: RwLock::new(HashMap::new()) })
+        Arc::new(Self {
+            cfg,
+            sessions: RwLock::new(sessions),
+            rib: RwLock::new(HashMap::new()),
+            reflect_tx: RwLock::new(HashMap::new()),
+        })
     }
 
     async fn set_state(&self, neighbor: &str, st: SessionState) {
@@ -273,6 +295,10 @@ impl BgpSpeaker {
         }
 
         self.set_state(&neighbor, SessionState::Established).await;
+
+        // register reflection channel and hand the write half to a drain task
+        let (refl_tx, refl_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        self.reflect_tx.write().await.insert(neighbor.clone(), refl_tx);
         let negotiated_hold = {
             let s = self.sessions.read().await;
             s.get(&neighbor).map(|i| i.negotiated_hold_secs).unwrap_or(want_hold)
@@ -301,6 +327,25 @@ impl BgpSpeaker {
                 .await?;
         }
 
+        // split socket: drain task owns writes (reflected updates + keepalives)
+        let (mut sock_rd, mut sock_wr) = sock.into_split();
+        let mut refl_rx = refl_rx;
+        let (ka_tx, mut ka_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    m = refl_rx.recv() => match m {
+                        Some(msg) => { if sock_wr.write_all(&msg).await.is_err() { break } }
+                        None => break,
+                    },
+                    m = ka_rx.recv() => match m {
+                        Some(msg) => { if sock_wr.write_all(&msg).await.is_err() { break } }
+                        None => break,
+                    },
+                }
+            }
+        });
+
         // keepalive at hold/3 + expiry enforcement
         let ka_every = Duration::from_secs((negotiated_hold / 3).max(1) as u64);
         let mut ka_interval = tokio::time::interval(ka_every);
@@ -311,13 +356,16 @@ impl BgpSpeaker {
                 _ = ka_interval.tick() => {
                     if last_rx.elapsed() > Duration::from_secs(negotiated_hold as u64) {
                         warn!(neighbor=%neighbor, "hold timer expired");
-                        let _ = sock.write_all(&encode_notification(4, 0)).await;
+                        // route the notification through the drain queue
+                        let _ = ka_tx.send(encode_notification(4, 0));
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        self.reflect_tx.write().await.remove(&neighbor);
                         self.set_state(&neighbor, SessionState::Idle).await;
                         return Ok(());
                     }
-                    sock.write_all(&encode_keepalive()).await?;
+                    let _ = ka_tx.send(encode_keepalive());
                 }
-                msg = read_message(&mut sock, &mut buf, &mut tmp) => {
+                msg = read_message(&mut sock_rd, &mut buf, &mut tmp) => {
                     last_rx = Instant::now();
                     let msg = msg?;
                     match msg.msg_type {
@@ -336,6 +384,28 @@ impl BgpSpeaker {
                                     }
                                 }
                                 for (p, plen) in announced {
+                                    // reflect to other established neighbors when RR is on
+                                    if self.cfg.route_reflector {
+                                        let cluster = self.cluster_id().to_be_bytes();
+                                        let targets: Vec<mpsc::UnboundedSender<Vec<u8>>> =
+                                            self.reflect_tx
+                                                .read()
+                                                .await
+                                                .iter()
+                                                .filter(|(n, _)| **n != neighbor)
+                                                .map(|(_, tx)| tx.clone())
+                                                .collect();
+                                        for tx in targets {
+                                            let _ = tx.send(encode_update_ext(
+                                                &[p.clone()],
+                                                &[],
+                                                router_id,
+                                                local_as,
+                                                (router_id, u32::from_be_bytes(cluster)),
+                                            ));
+                                        }
+                                    }
+
                                     // import policy: per-neighbor override, else global exact-match list
                                     let allowlist: &[String] = self
                                         .cfg
@@ -384,11 +454,12 @@ impl BgpSpeaker {
                         MSG_ROUTE_REFRESH => {
                             info!(neighbor = %neighbor, "route refresh received");
                             if !networks.is_empty() {
-                                sock.write_all(&encode_update(&networks, &[], router_id, local_as)).await?;
+                                let _ = ka_tx.send(encode_update(&networks, &[], router_id, local_as));
                             }
                         }
                         MSG_NOTIFICATION => {
                             warn!(neighbor=%neighbor, "notification received, closing");
+                            self.reflect_tx.write().await.remove(&neighbor);
                             self.set_state(&neighbor, SessionState::Idle).await;
                             return Ok(());
                         }
@@ -405,8 +476,8 @@ struct RawMessage {
     body: Vec<u8>,
 }
 
-async fn read_message(
-    sock: &mut TcpStream,
+async fn read_message<R: tokio::io::AsyncRead + Unpin>(
+    sock: &mut R,
     buf: &mut Vec<u8>,
     tmp: &mut [u8],
 ) -> std::io::Result<RawMessage> {
@@ -522,6 +593,17 @@ fn encode_update(
     next_hop: u32,
     local_as: u32,
 ) -> Vec<u8> {
+    encode_update_inner(announced, withdrawn, next_hop, local_as, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_update_inner(
+    announced: &[Prefix],
+    withdrawn: &[Prefix],
+    next_hop: u32,
+    local_as: u32,
+    cluster_id: Option<(u32, u32)>,
+) -> Vec<u8> {
     let mut wd = Vec::new();
     for p in withdrawn {
         wd.extend_from_slice(&p.encode());
@@ -534,6 +616,13 @@ fn encode_update(
     attrs.extend_from_slice(&(local_as.min(0xFFFF) as u16).to_be_bytes());
     attrs.extend_from_slice(&[0x40, 0x03, 0x04]); // NEXT_HOP
     attrs.extend_from_slice(&next_hop.to_be_bytes());
+    if let Some((originator, cluster)) = cluster_id {
+        // ORIGINATOR_ID (type 9) + CLUSTER_LIST with one entry (type 10)
+        attrs.extend_from_slice(&[0x80, 0x09, 0x04]);
+        attrs.extend_from_slice(&originator.to_be_bytes());
+        attrs.extend_from_slice(&[0x80, 0x0a, 0x04]);
+        attrs.extend_from_slice(&cluster.to_be_bytes());
+    }
 
     let attr_len = attrs.len() as u16;
 
@@ -549,6 +638,17 @@ fn encode_update(
     let mut m = header(19 + body.len(), MSG_UPDATE);
     m.extend_from_slice(&body);
     m
+}
+
+/// Reflected variant appending ORIGINATOR_ID + CLUSTER_LIST (RFC 4456).
+fn encode_update_ext(
+    announced: &[Prefix],
+    withdrawn: &[Prefix],
+    next_hop: u32,
+    local_as: u32,
+    cluster: (u32, u32),
+) -> Vec<u8> {
+    encode_update_inner(announced, withdrawn, next_hop, local_as, Some(cluster))
 }
 
 fn parse_prefixes(buf: &[u8]) -> Vec<Prefix> {

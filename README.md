@@ -88,12 +88,14 @@ byte counters, connection limits, graceful stop, runtime backend management
 **HTTP/2 upstream** support, WireGuard mesh control plane (keypairs,
 validation, `wg-quick`/`wg setconf` rendering, live peer management),
 BGP with capabilities negotiation, route refresh, hold timers, local-pref +
-allowlist policies and best-path/multipath RIB, Let's Encrypt automation
+allowlist policies, best-path/multipath RIB and lab-grade **route reflection**
+(CLUSTER_LIST loop prevention), Let's Encrypt automation
 (HTTP-01 + daily renewal), Prometheus `/metrics`, config reload API, and an
 embedded dark-theme dashboard.
 
-Known limitations (learning project): BGP has no route reflection and no
-full RIB policy framework (only local-pref + prefix allowlists); ACME DNS-01
+Known limitations (learning project): BGP policy framework is limited to
+local-pref and prefix allowlists (no communities / MED / full policy language);
+ACME DNS-01
 currently covers regular (non-wildcard) names via Cloudflare — wildcards
 still need an external tool; mesh apply requires Linux plus the `wg` tools;
 h2 upstream is bridge-grade rather than a full proxy implementation.
