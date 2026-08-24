@@ -82,12 +82,21 @@ backends = ["10.100.0.21:8080"]
 
 ## Status & roadmap
 
-Working today: L4 + L7 load balancing with live health checks, WG key
-generation/config rendering, lab-grade BGP sessions, REST + dashboard.
+Working today: L4 + L7 load balancing with TCP **and** HTTP health checks,
+byte counters, connection limits, graceful stop, runtime backend management
+(`POST /api/lb/tcp/:name/backends`), **TLS termination with hot-reload**,
+**HTTP/2 upstream** support, WireGuard mesh control plane (keypairs,
+validation, `wg-quick`/`wg setconf` rendering, live peer management),
+BGP with capabilities negotiation, route refresh, hold timers, local-pref +
+allowlist policies and best-path/multipath RIB, Let's Encrypt automation
+(HTTP-01 + daily renewal), Prometheus `/metrics`, config reload API, and an
+embedded dark-theme dashboard.
 
-Known limitations (learning project): BGP has no capabilities negotiation or
-policy filters; mesh apply requires Linux + `wg-quick`; HTTP proxy is
-HTTP/1.1-only; no TLS termination yet.
+Known limitations (learning project): BGP has no route reflection and no
+full RIB policy framework (only local-pref + prefix allowlists); ACME is
+HTTP-01 only (no TLS-ALPN/DNS-01, so wildcard certificates need DNS-01
+elsewhere); mesh apply requires Linux plus the `wg` tools; h2 upstream is
+bridge-grade rather than a full proxy implementation.
 
 ## License
 
