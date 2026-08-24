@@ -146,6 +146,10 @@ pub struct TcpPool {
     pub health_interval_secs: u64,
     #[serde(default = "default_hc_timeout")]
     pub health_timeout_secs: u64,
+    /// When set, health checks send `GET <path>` and require a 2xx/3xx answer
+    /// instead of a bare TCP connect.
+    #[serde(default)]
+    pub health_check_path: Option<String>,
     pub backends: Vec<String>,
 }
 
@@ -189,6 +193,8 @@ pub struct HttpPool {
     #[serde(default = "default_hc_timeout")]
     pub health_timeout_secs: u64,
     #[serde(default)]
+    pub health_check_path: Option<String>,
+    #[serde(default)]
     pub routes: Vec<HttpRoute>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -224,6 +230,7 @@ impl Config {
             name: "demo-tcp".into(),
             listen: "127.0.0.1:9000".into(),
             algorithm: Algorithm::LeastConnections,
+            health_check_path: None,
             health_interval_secs: 5,
             health_timeout_secs: 2,
             backends: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into()],
@@ -232,6 +239,7 @@ impl Config {
             name: "demo-http".into(),
             listen: "127.0.0.1:9090".into(),
             tls: None,
+            health_check_path: None,
             health_interval_secs: 5,
             health_timeout_secs: 2,
             routes: vec![HttpRoute {
