@@ -80,17 +80,36 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
         return Err(AcmeError::Protocol("no domains configured".into()));
     }
 
-    // account (lab-grade: created per run; persist credentials for reuse later)
-    let (account, _creds) = Account::create(
-        &NewAccount {
-            contact: &[Box::leak(format!("mailto:{}", cfg.email).into_boxed_str())],
-            terms_of_service_agreed: true,
-            only_return_existing: false,
+    // Account: restore persisted credentials when available, else create and
+    // persist them next to the key file. Avoids LE account rate limits.
+    let creds_path = format!("{}.account.json", cfg.key_file);
+    let (account, creds_json) = match tokio::fs::read_to_string(&creds_path).await {
+        Ok(raw) => match serde_json::from_str::<instant_acme::AccountCredentials>(&raw) {
+            Ok(creds) => match Account::from_credentials(creds).await {
+                Ok(acc) => {
+                    tracing::info!("acme account restored from {}", creds_path);
+                    (acc, raw)
+                }
+                Err(e) => {
+                    tracing::warn!("stored acme credentials unusable ({e}); creating new account");
+                    create_account(cfg).await?
+                }
+            },
+            Err(e) => {
+                tracing::warn!("stored acme credentials corrupt ({e}); creating new account");
+                create_account(cfg).await?
+            }
         },
-        &cfg.directory_url,
-        None,
-    )
-    .await?;
+        Err(_) => create_account(cfg).await?,
+    };
+    // keep the credentials file in sync with whatever we ended up using
+    let existing = tokio::fs::read_to_string(&creds_path).await.ok();
+    if existing.as_deref() != Some(creds_json.as_str()) {
+        if let Some(parent) = std::path::Path::new(&creds_path).parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        tokio::fs::write(&creds_path, &creds_json).await?;
+    }
 
     let identifiers: Vec<Identifier> =
         cfg.domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
@@ -166,4 +185,19 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
 
     server.shutdown();
     Ok((pem, key.serialize_pem()))
+}
+
+async fn create_account(cfg: &Acme) -> Result<(Account, String), AcmeError> {
+    let (account, creds) = Account::create(
+        &NewAccount {
+            contact: &[Box::leak(format!("mailto:{}", cfg.email).into_boxed_str())],
+            terms_of_service_agreed: true,
+            only_return_existing: false,
+        },
+        &cfg.directory_url,
+        None,
+    )
+    .await?;
+    let json = serde_json::to_string(&creds).map_err(|e| AcmeError::Protocol(e.to_string()))?;
+    Ok((account, json))
 }

@@ -255,7 +255,8 @@ impl HttpLoadBalancer {
     }
 
     /// Bridge the buffered request onto an h2 backend and write back an
-    /// HTTP/1.1 response. Body is buffered up to 16 MiB.
+    /// Bridge the request onto an h2 backend with streamed body in both
+    /// directions (chunked transfer back to the HTTP/1.1 client).
     async fn h2_bridge(
         this: &Arc<Self>,
         client: &mut Conn,
@@ -265,87 +266,142 @@ impl HttpLoadBalancer {
         path: &str,
         peer_ip: IpAddr,
     ) -> std::io::Result<()> {
-        const MAX_BODY: usize = 16 * 1024 * 1024;
         let head_str = String::from_utf8_lossy(&buf[..head_end]).into_owned();
         let Some(head) = crate::h2up::parse_head(&head_str) else {
             write_simple_response(client, 400, "Bad Request").await?;
             return Ok(());
         };
-
-        // buffer body until content-length satisfied or connection close
-        let content_len: usize = head
+        // inject forwarded headers
+        let mut head = head;
+        head.headers
+            .push(("X-Forwarded-For".into(), peer_ip.to_string()));
+        let content_len: Option<usize> = head
             .headers
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case("content-length"))
-            .and_then(|(_, v)| v.parse().ok())
-            .unwrap_or(0);
-        let mut body_bytes = buf[head_end..].to_vec();
-        if content_len > MAX_BODY {
-            write_simple_response(client, 413, "Payload Too Large").await?;
-            return Ok(());
-        }
-        while body_bytes.len() < content_len {
-            let mut tmp = [0u8; 16384];
-            let n = client.read(&mut tmp).await?;
-            if n == 0 {
-                break;
-            }
-            body_bytes.extend_from_slice(&tmp[..n]);
-        }
-        body_bytes.truncate(content_len.max(body_bytes.len().min(content_len)));
+            .and_then(|(_, v)| v.parse().ok());
 
         let max_tries = route.backends.len().max(1);
         for _ in 0..max_tries {
             let Some(be) = select_backend(&route.backends, this.algo, &route.counter) else {
                 break;
             };
-            match be.connect().await {
-                Ok(upstream) => {
-                    be.release(); // h2 session owns its own socket; release slot immediately
-                    drop(upstream);
 
-                    let mut fwd_head = head.clone();
-                    fwd_head
-                        .headers
-                        .push(("X-Forwarded-For".into(), peer_ip.to_string()));
-                    match crate::h2up::exchange(
-                        be.addr,
-                        &fwd_head,
-                        bytes::Bytes::from(body_bytes.clone()),
-                    )
-                    .await
-                    {
-                        Ok((status, headers, body)) => {
-                            let mut resp =
-                                format!("HTTP/1.1 {status}\r\n");
-                            for (n, v) in &headers {
-                                let skip = n.eq_ignore_ascii_case("transfer-encoding")
-                                    || n.eq_ignore_ascii_case("content-length")
-                                    || n.eq_ignore_ascii_case("connection");
-                                if !skip {
-                                    resp.push_str(&format!("{n}: {v}\r\n"));
-                                }
-                            }
-                            resp.push_str(&format!(
-                                "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            ));
-                            client.write_all(resp.as_bytes()).await?;
-                            client.write_all(&body).await?;
-                            tracing::trace!(pool=%this.name, path=%path, backend=%be.addr, "h2 proxied");
-                            return Ok(());
+            // open the h2 session and send headers (stream stays open)
+            let mut session = match crate::h2up::open_session(be.addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!(backend=%be.addr, error=%e, "h2 connect failed");
+                    be.set_healthy(false);
+                    continue;
+                }
+            };
+            let has_body = content_len.map(|l| l > 0).unwrap_or(true);
+            let (response_fut, mut send_stream) =
+                match session.begin(&head, has_body) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::debug!(backend=%be.addr, error=%e, "h2 begin failed");
+                        be.set_healthy(false);
+                        continue;
+                    }
+                };
+
+            // ---- client -> backend: stream buffered prefix + remainder ----
+            let mut buffered = buf[head_end..].to_vec();
+            if let Some(want) = content_len {
+                buffered.truncate(want.min(buffered.len()));
+            }
+            let mut upload_err: Option<std::io::Error> = None;
+            if !buffered.is_empty() {
+                if let Err(e) = crate::h2up::send_all(&mut send_stream, &buffered).await {
+                    upload_err = Some(e);
+                }
+            }
+            if upload_err.is_none() {
+                if let Some(rem_total) = content_len.map(|l| l.saturating_sub(buffered.len())) {
+                    let mut sent = buffered.len();
+                    while rem_total.saturating_sub(sent) > 0 {
+                        let mut tmp = [0u8; 16384];
+                        let want = (rem_total - sent).min(tmp.len());
+                        let n = client.read(&mut tmp[..want]).await?;
+                        if n == 0 {
+                            break;
                         }
-                        Err(e) => {
-                            tracing::debug!(backend=%be.addr, error=%e, "h2 exchange failed");
-                            be.set_healthy(false);
+                        crate::h2up::send_all(&mut send_stream, &tmp[..n]).await?;
+                        sent += n;
+                    }
+                } else {
+                    // unknown length: stream until client closes
+                    loop {
+                        let mut tmp = [0u8; 16384];
+                        match client.read(&mut tmp).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => crate::h2up::send_all(&mut send_stream, &tmp[..n]).await?,
                         }
                     }
                 }
+            }
+            if let Some(e) = upload_err {
+                tracing::debug!(error=%e, "h2 upload failed");
+                be.release();
+                be.set_healthy(false);
+                continue;
+            }
+            be.release();
+            let _ = send_stream.send_data(bytes::Bytes::new(), true);
+
+            // ---- backend -> client: await response, stream chunked ----
+            let resp = match response_fut.await {
+                Ok(r) => r,
                 Err(e) => {
-                    tracing::debug!(backend = %be.addr, error = %e, "backend connect failed");
+                    tracing::debug!(backend=%be.addr, error=%e, "h2 response failed");
                     be.set_healthy(false);
+                    continue;
+                }
+            };
+            be.add_bytes(0, 0); // byte accounting happens via pump for h1; keep gauge simple
+
+            let status = resp.status().as_u16();
+            let mut head_out = format!("HTTP/1.1 {status}\r\n");
+            let mut skip_te = false;
+            for (n, v) in resp.headers() {
+                if n == http::header::TRANSFER_ENCODING {
+                    skip_te = true;
+                    continue;
+                }
+                if n == http::header::CONTENT_LENGTH {
+                    continue; // we will use chunked
+                }
+                if n == http::header::CONNECTION {
+                    continue;
+                }
+                head_out.push_str(&format!("{}: {}\r\n", n.as_str(), String::from_utf8_lossy(v.as_bytes())));
+            }
+            if skip_te || true {
+                head_out.push_str("Transfer-Encoding: chunked\r\n");
+            }
+            head_out.push_str("Connection: close\r\n\r\n");
+            client.write_all(head_out.as_bytes()).await?;
+
+            let mut body = resp.into_body();
+            loop {
+                match std::future::poll_fn(|cx| body.poll_data(cx)).await {
+                    Some(Ok(chunk)) => {
+                        crate::h2up::write_chunk(client, &chunk).await?;
+                        let _ = body.flow_control().release_capacity(chunk.len());
+                    }
+
+                    Some(Err(e)) => {
+                        tracing::debug!(error=%e, "h2 body error");
+                        return Ok(());
+                    }
+                    None => break,
                 }
             }
+            client.write_all(b"0\r\n\r\n").await?;
+            tracing::trace!(pool=%this.name, path=%path, backend=%be.addr, "h2 proxied");
+            return Ok(());
         }
         write_simple_response(client, 502, "no healthy backend").await
     }

@@ -126,6 +126,8 @@ pub struct BgpSpeaker {
 pub struct Route {
     pub neighbor: String,
     pub as_path_len: u32,
+    /// LOCAL_PREF from the neighbor policy (higher wins first).
+    pub local_pref: u32,
 }
 
 /// All routes for a prefix; `best()` selects the shortest AS-path.
@@ -135,8 +137,9 @@ pub struct RibEntry {
 }
 
 impl RibEntry {
+    /// Best = highest LOCAL_PREF, then shortest AS_PATH.
     pub fn best(&self) -> Option<&Route> {
-        self.routes.iter().min_by_key(|r| r.as_path_len)
+        self.routes.iter().min_by_key(|r| (std::cmp::Reverse(r.local_pref), r.as_path_len))
     }
     pub fn best_len(&self) -> u32 {
         self.best().map(|r| r.as_path_len).unwrap_or(u32::MAX)
@@ -349,14 +352,29 @@ impl BgpSpeaker {
                                     }
                                     info!(neighbor=%neighbor, prefix=%p, as_path=plen, "learned route");
                                     self.update_session(&neighbor, |e| e.prefixes_received += 1).await;
-                                    let entry = rib.entry(p).or_default();
+                                    let lp = self
+                                        .cfg
+                                        .neighbors
+                                        .iter()
+                                        .find(|n| n.ip == neighbor)
+                                        .map(|n| n.local_pref)
+                                        .unwrap_or(100);
+                                    let entry = rib.entry(p.clone()).or_default();
                                     match entry.routes.iter_mut().find(|r| r.neighbor == neighbor) {
-                                        Some(r) => r.as_path_len = plen,
+                                        Some(r) => {
+                                            r.as_path_len = plen;
+                                            r.local_pref = lp;
+                                        }
                                         None => {
                                             if !self.cfg.multipath {
-                                                entry.routes.clear();
+                                                // single-path mode: drop worse routes on insert
+                                                if entry.best().map(|b| (std::cmp::Reverse(b.local_pref), b.as_path_len)) <= Some((std::cmp::Reverse(lp), plen)) && !entry.routes.is_empty() {
+                                                    tracing::debug!(prefix=%p, "kept better existing route");
+                                                } else {
+                                                    entry.routes.clear();
+                                                }
                                             }
-                                            entry.routes.push(Route { neighbor: neighbor.clone(), as_path_len: plen });
+                                            entry.routes.push(Route { neighbor: neighbor.clone(), as_path_len: plen, local_pref: lp });
                                         }
                                     }
                                 }
@@ -660,5 +678,32 @@ mod tests {
         assert_eq!(want.min(remote.max(3)), 60);
         let tiny_remote = 1u16;
         assert_eq!(want.min(tiny_remote.max(3)), 3);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn local_pref_beats_shorter_path() {
+        let entry = RibEntry {
+            routes: vec![
+                Route { neighbor: "a".into(), as_path_len: 1, local_pref: 50 },
+                Route { neighbor: "b".into(), as_path_len: 5, local_pref: 200 },
+            ],
+        };
+        assert_eq!(entry.best().unwrap().neighbor, "b");
+    }
+
+    #[test]
+    fn equal_pref_shortest_path_wins() {
+        let entry = RibEntry {
+            routes: vec![
+                Route { neighbor: "long".into(), as_path_len: 7, local_pref: 100 },
+                Route { neighbor: "short".into(), as_path_len: 2, local_pref: 100 },
+            ],
+        };
+        assert_eq!(entry.best().unwrap().neighbor, "short");
     }
 }
