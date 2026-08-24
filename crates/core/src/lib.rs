@@ -20,6 +20,8 @@ pub struct Config {
     #[serde(default)]
     pub bgp: Bgp,
     #[serde(default)]
+    pub acme: Acme,
+    #[serde(default)]
     pub lb: LoadBalancers,
 }
 
@@ -39,6 +41,47 @@ pub struct General {
 pub struct TlsConfig {
     pub cert_file: String,
     pub key_file: String,
+}
+
+/// Let's Encrypt automation (HTTP-01 challenge).
+/// The daemon runs a tiny challenge server on `http01_port`, obtains the
+/// certificate and writes it to `cert_file`/`key_file`; point an HttpPool's
+/// TLS section at the same paths and reload TLS to pick it up.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Acme {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_acme_directory")]
+    pub directory_url: String,
+    pub email: String,
+    /// DNS names to include in the certificate.
+    pub domains: Vec<String>,
+    #[serde(default = "default_http01_port")]
+    pub http01_port: u16,
+    pub cert_file: String,
+    pub key_file: String,
+    /// Renew when less than this many days remain (default 30).
+    #[serde(default = "default_renew_days")]
+    pub renew_days: u32,
+}
+
+fn default_acme_directory() -> String {
+    "https://acme-staging-v2.api.letsencrypt.org/directory".into()
+}
+fn default_http01_port() -> u16 {
+    80
+}
+fn default_renew_days() -> u32 {
+    30
+}
+
+/// Upstream protocol for HTTP pools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendProto {
+    #[default]
+    Http1,
+    H2,
 }
 
 impl Default for General {
@@ -107,9 +150,12 @@ pub struct Bgp {
     /// IPv4 prefixes this node originates.
     #[serde(default)]
     pub networks: Vec<String>,
-    /// Optional import filter: only accept prefixes in this list (exact match).
+    /// Optional global import filter: only accept prefixes in this list (exact match).
     #[serde(default)]
     pub import_allowlist: Vec<String>,
+    /// Keep multiple equal-cost routes per prefix instead of one best path.
+    #[serde(default)]
+    pub multipath: bool,
 }
 
 fn default_asn() -> u32 {
@@ -126,6 +172,21 @@ fn default_bgp_port() -> u16 {
 pub struct BgpNeighbor {
     pub ip: String,
     pub remote_as: u32,
+    /// Per-neighbor import override; None = fall back to the global list.
+    #[serde(default)]
+    pub import_allowlist: Option<Vec<String>>,
+    /// Prefixes advertised to this neighbor (exact match); None = all.
+    #[serde(default)]
+    pub export_allowlist: Option<Vec<String>>,
+}
+
+impl BgpNeighbor {
+    pub fn effective_import<'a>(&'a self, global: &'a [String]) -> &'a [String] {
+        self.import_allowlist.as_deref().unwrap_or(global)
+    }
+    pub fn effective_export<'a>(&'a self, global: &'a [String]) -> &'a [String] {
+        self.export_allowlist.as_deref().unwrap_or(global)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -194,6 +255,9 @@ pub struct HttpPool {
     pub health_timeout_secs: u64,
     #[serde(default)]
     pub health_check_path: Option<String>,
+    /// Protocol spoken by backends for this pool.
+    #[serde(default)]
+    pub backend_proto: BackendProto,
     #[serde(default)]
     pub routes: Vec<HttpRoute>,
 }
@@ -240,6 +304,7 @@ impl Config {
             listen: "127.0.0.1:9090".into(),
             tls: None,
             health_check_path: None,
+            backend_proto: BackendProto::Http1,
             health_interval_secs: 5,
             health_timeout_secs: 2,
             routes: vec![HttpRoute {
