@@ -188,6 +188,8 @@ impl HttpLoadBalancer {
         // Read until end of request head (bounded).
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
         let mut tmp = [0u8; 4096];
+        // whole request head must arrive within 10 seconds
+        let head_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let head_end = loop {
             let n = client.read(&mut tmp).await?;
             if n == 0 {
@@ -199,6 +201,10 @@ impl HttpLoadBalancer {
             }
             if buf.len() > 128 * 1024 {
                 write_simple_response(&mut client, 431, "Request Header Fields Too Large").await?;
+                return Ok(());
+            }
+            if std::time::Instant::now() > head_deadline {
+                write_simple_response(&mut client, 408, "Request Header Timeout").await?;
                 return Ok(());
             }
         };

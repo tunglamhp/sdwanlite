@@ -134,7 +134,15 @@ impl Backend {
     }
 
     async fn connect(&self) -> std::io::Result<TcpStream> {
-        let s = TcpStream::connect(self.addr).await?;
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+        let s = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(self.addr))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("connect timeout to {}", self.addr),
+                )
+            })??;
         self.active_conns.fetch_add(1, Ordering::Relaxed);
         self.total_conns.fetch_add(1, Ordering::Relaxed);
         Ok(s)

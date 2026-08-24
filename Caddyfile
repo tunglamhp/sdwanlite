@@ -1,0 +1,5 @@
+# Off-the-shelf edge: full client-facing HTTP/2 + automatic HTTPS (Let's Encrypt)
+# in front of sdwanlite. Adjust your-domain.example.com and DNS first.
+your-domain.example.com {
+    reverse_proxy sdwanlite:9090
+}

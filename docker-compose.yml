@@ -1,0 +1,54 @@
+# SDWANLite production deployment.
+#
+# Modes:
+#   default      : sdwanlite alone (LB + API + ACME DNS-01)
+#   --profile edge : adds Caddy in front for client-facing HTTP/2 (off-the-shelf
+#                    edge proxy; sdwanlite speaks plain HTTP behind it)
+#
+# Mesh (WireGuard): requires kernel WG on the Docker host. The container runs
+# with NET_ADMIN + /dev/net/tun so the existing wg-quick integration works
+# unchanged — no userspace WG code needed.
+
+services:
+  sdwanlite:
+    image: ghcr.io/tunglamhp/sdwanlite:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # API + dashboard
+      - "9000:9000"   # demo TCP pool — adjust to your pools
+      - "9090:9090"   # demo HTTP pool
+    volumes:
+      - ./sdwanlite.toml:/etc/sdwanlite/sdwanlite.toml:ro
+    command: ["/etc/sdwanlite/sdwanlite.toml"]
+    # Uncomment for WireGuard mesh inside the container:
+    # cap_add:
+    #   - NET_ADMIN
+    # devices:
+    #   - /dev/net/tun
+    # sysctls:
+    #   - net.ipv4.ip_forward=1
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Off-the-shelf edge proxy for full client-facing HTTP/2 + automatic TLS.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - sdwanlite
+
+volumes:
+  caddy_data:
+  caddy_config:

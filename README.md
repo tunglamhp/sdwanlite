@@ -99,6 +99,12 @@ wildcard ACME certificates work via DNS-01 with a Cloudflare token
 (request rewriting wrapper); mesh apply requires Linux plus the `wg` tools;
 h2 upstream is bridge-grade rather than a full proxy implementation.
 
+## Production
+
+See [PRODUCTION.md](PRODUCTION.md): systemd unit, Docker/Compose packaging
+(kernel WireGuard inside the container), GHCR images, and an off-the-shelf
+Caddy edge profile for client-facing HTTP/2 + automatic HTTPS.
+
 ## CI & releases
 
 - Push to `main`/`dev` runs the full test suite (GitHub Actions).
