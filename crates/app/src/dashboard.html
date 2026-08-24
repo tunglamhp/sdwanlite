@@ -147,6 +147,47 @@ async function refreshWg() {
         || '<tr><td colspan=3 style="color:var(--muted)">no peers configured</td></tr>';
   } catch {}
 }
+function listenEvents() {
+  const es = new EventSource('/api/events');
+  es.onmessage = (e) => {
+    try { window.__lastEvent = JSON.parse(e.data); } catch {}
+  };
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    document.getElementById('node').textContent = s.node;
+    document.getElementById('version').textContent = 'v' + s.version;
+    document.getElementById('uptime-val').textContent = fmtUptime(s.uptime_secs);
+
+    const meshEl = document.getElementById('mesh-state');
+    meshEl.innerHTML = badge(s.mesh_enabled, 'enabled', 'disabled');
+    document.getElementById('mesh-peers').textContent = s.mesh_peers_configured;
+
+    const bgpEl = document.getElementById('bgp-state');
+    bgpEl.innerHTML = badge(s.bgp_enabled, 'enabled', 'disabled');
+    document.getElementById('rib-count').textContent = s.bgp_rib_size;
+    const tbody = document.querySelector('#bgp-sessions tbody');
+    tbody.innerHTML = (s.bgp_sessions || []).map(x =>
+      `<tr><td>${x.neighbor} ${x.remote_as?`(AS${x.remote_as})`:''}</td>
+       <td>${badge(x.state==='established', x.state + ' / ' + x.prefixes_received + ' pf', x.state)}</td></tr>`).join('')
+      || '<tr><td colspan=2 style="color:var(--muted)">no sessions</td></tr>';
+
+    const lb = await (await fetch('/api/lb')).json();
+    document.querySelector('#tcp-pools tbody').innerHTML =
+      lb.tcp.flatMap(p => p.backends.map(b => `
+        <tr><td>${p.name}</td><td>${p.algorithm}</td><td>${b.addr}</td>
+        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td>
+        <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`)).join('')
+      || '<tr><td colspan=8 style="color:var(--muted)">no pools</td></tr>';
+    document.querySelector('#http-pools tbody').innerHTML =
+      lb.http.flatMap(p => p.routes.map(r => `
+        <tr><td>${p.name}</td><td>${r.host||'*'}</td><td>${r.path_prefix||'/'}</td><td>${r.backends}</td></tr>`)).join('')
+      || '<tr><td colspan=4 style="color:var(--muted)">no pools</td></tr>';
+  } catch (e) { console.error(e); }
+}
+listenEvents();
 refresh();
 refreshWg(); setInterval(refreshWg, 10000);
 setInterval(refresh, 3000);

@@ -6,6 +6,7 @@ use sdwanlite_lb::HttpLoadBalancer;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::Instant;
+use futures_util::StreamExt as _;
 
 pub struct AppState {
     pub config: Arc<sdwanlite_core::Config>,
@@ -84,6 +85,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/mesh/keypair", get(api_keypair))
         .route("/api/mesh/status", get(api_mesh_status))
         .route("/metrics", get(api_metrics))
+        .route("/api/events", get(api_events))
         .route("/api/reload", post(api_reload))
         .route("/api/tls/reload", post(api_tls_reload))
         .route("/api/bgp/rib", get(api_rib))
@@ -414,4 +416,32 @@ async fn api_tls_reload(
         }
     }
     axum::Json(serde_json::json!({ "ok": true, "results": results }))
+}
+
+/// Server-Sent Events stream of the status payload (replaces dashboard polling).
+async fn api_events(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Sse<
+    impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use axum::response::sse::{Event, KeepAlive};
+    let interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+        std::time::Duration::from_secs(3),
+    ));
+    let state = state.clone();
+    let stream = interval.map(move |_| {
+        let state = &state;
+        // build the same payload as /api/status synchronously enough for SSE
+        let node = state.config.general.name.clone();
+        let uptime = state.started.elapsed().as_secs();
+        let tcp_pools = state.tcp_pools.len();
+        let http_pools = state.http_pools.len();
+        let ev = Event::default().data(serde_json::json!({
+            "node": node,
+            "uptime_secs": uptime,
+            "lb": { "tcp_pools": tcp_pools, "http_pools": http_pools }
+        }).to_string());
+        Ok(ev)
+    });
+    axum::response::Sse::new(stream).keep_alive(KeepAlive::default())
 }

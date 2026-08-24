@@ -93,10 +93,22 @@ async fn main() -> Result<()> {
 
     // API + dashboard
     let addr = format!("{}:{}", config.general.api_addr, config.general.api_port);
-    let app = server::router(state);
+    let app = server::router(Arc::clone(&state));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("api + dashboard listening on http://{addr}");
-    axum::serve(listener, app).await?;
+
+    // graceful shutdown: Ctrl-C stops accept loops, then in-flight connections
+    // are given a moment before process exit
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::select! {
+        r = axum::serve(listener, app) => { r?; }
+        _ = shutdown => {
+            tracing::info!("shutdown signal received");
+            for pool in &state.tcp_pools { pool.stop(); }
+            for pool in &state.http_pools { pool.stop(); }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
 
     Ok(())
 }
