@@ -163,6 +163,15 @@ pub struct Bgp {
     /// Keep multiple equal-cost routes per prefix instead of one best path.
     #[serde(default)]
     pub multipath: bool,
+    /// Act as a route reflector for the configured neighbors (lab-grade RR):
+    /// routes learned from one neighbor are reflected to the others with
+    /// CLUSTER_LIST loop prevention.
+    #[serde(default)]
+    pub route_reflector: bool,
+    /// BGP Identifier of this reflector used in CLUSTER_LIST
+    /// (defaults to router_id when empty).
+    #[serde(default)]
+    pub cluster_id: String,
 }
 
 fn default_asn() -> u32 {
