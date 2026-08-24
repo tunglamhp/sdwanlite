@@ -99,6 +99,12 @@ wildcard ACME certificates work via DNS-01 with a Cloudflare token
 (request rewriting wrapper); mesh apply requires Linux plus the `wg` tools;
 h2 upstream is bridge-grade rather than a full proxy implementation.
 
+## CI & releases
+
+- Push to `main`/`dev` runs the full test suite (GitHub Actions).
+- Pushing a tag (`v*`) automatically builds Linux + Windows release binaries
+  and creates a GitHub Release with assets — no manual packaging.
+
 ## License
 
 MIT

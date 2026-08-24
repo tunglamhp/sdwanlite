@@ -18,6 +18,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("sdwanlited {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let config_path = args
         .get(1)
         .map(std::path::PathBuf::from)

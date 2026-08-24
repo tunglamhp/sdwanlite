@@ -261,3 +261,85 @@ async fn h2_upstream_roundtrip() {
     lb.stop();
     server.abort();
 }
+
+/// Transparent pump must carry a WebSocket-style upgrade handshake through
+/// the HTTP pool (Connection/Upgrade headers pass untouched).
+#[tokio::test]
+async fn websocket_upgrade_passes_through_http_pool() {
+    // backend: read request head, reply 101, then echo frames raw
+    let bl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let baddr = bl.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = bl.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                let _ = s.read(&mut buf).await; // request head
+                let resp = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+                s.write_all(resp).await.ok();
+                loop {
+                    let mut f = [0u8; 128];
+                    match s.read(&mut f).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => s.write_all(&f[..n]).await.ok(),
+                    };
+                }
+            });
+        }
+    });
+
+    let pool = HttpPool {
+        name: "ws-test".into(),
+        listen: "127.0.0.1:0".into(),
+        tls: None,
+        health_check_path: None,
+        backend_proto: sdwanlite_core::BackendProto::Http1,
+        health_interval_secs: 60,
+        health_timeout_secs: 2,
+        routes: vec![HttpRoute {
+            host: String::new(),
+            path_prefix: "/ws".into(),
+            backends: vec![baddr],
+        }],
+    };
+    let lb = HttpLoadBalancer::bind(&pool).await.unwrap();
+    let local = lb.local_addr().unwrap();
+    let server = tokio::spawn({
+        let lb = lb.clone();
+        async move { lb.serve().await }
+    });
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut c = tokio::net::TcpStream::connect(local).await.unwrap();
+    c.write_all(
+        b"GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )
+    .await
+    .unwrap();
+
+    // expect the 101 back through the LB
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+        assert!(std::time::Instant::now() < deadline, "timeout waiting for 101");
+        let mut b = [0u8; 512];
+        let n = tokio::time::timeout(std::time::Duration::from_millis(500), c.read(&mut b))
+            .await
+            .expect("read within timeout")
+            .expect("read");
+        got.extend_from_slice(&b[..n]);
+    }
+    assert!(String::from_utf8_lossy(&got).contains("101 Switching Protocols"));
+
+    // bidirectional echo after upgrade
+    c.write_all(b"\x81\x05hello").await.unwrap();
+    let mut echo = [0u8; 7];
+    tokio::time::timeout(std::time::Duration::from_secs(3), c.read_exact(&mut echo))
+        .await
+        .expect("echo within timeout")
+        .unwrap();
+    assert_eq!(&echo[2..], b"hello");
+
+    lb.stop();
+    server.abort();
+}

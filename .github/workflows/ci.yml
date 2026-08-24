@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Build (zero-warning gate)
+        run: cargo build --workspace 2>&1 | (! grep -E 'warning: (unused|variable|field|function)')
+      - name: Release build
+        run: cargo build --release
