@@ -30,6 +30,15 @@ pub struct General {
     pub api_addr: String,
     #[serde(default = "default_api_port")]
     pub api_port: u16,
+    /// Optional bearer token protecting mutating API endpoints.
+    #[serde(default)]
+    pub api_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TlsConfig {
+    pub cert_file: String,
+    pub key_file: String,
 }
 
 impl Default for General {
@@ -38,6 +47,7 @@ impl Default for General {
             name: "sdwanlite-node".into(),
             api_addr: default_api_addr(),
             api_port: default_api_port(),
+            api_token: None,
         }
     }
 }
@@ -89,15 +99,24 @@ pub struct Bgp {
     pub local_as: u32,
     #[serde(default = "default_bgp_port")]
     pub listen_port: u16,
+    /// Negotiated hold time proposal in seconds.
+    #[serde(default = "default_hold_time")]
+    pub hold_time_secs: u16,
     #[serde(default)]
     pub neighbors: Vec<BgpNeighbor>,
     /// IPv4 prefixes this node originates.
     #[serde(default)]
     pub networks: Vec<String>,
+    /// Optional import filter: only accept prefixes in this list (exact match).
+    #[serde(default)]
+    pub import_allowlist: Vec<String>,
 }
 
 fn default_asn() -> u32 {
     65000
+}
+fn default_hold_time() -> u16 {
+    180
 }
 fn default_bgp_port() -> u16 {
     179
@@ -162,6 +181,9 @@ fn default_hc_timeout() -> u64 {
 pub struct HttpPool {
     pub name: String,
     pub listen: String,
+    /// Optional TLS termination for this listener.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
     #[serde(default = "default_hc_interval")]
     pub health_interval_secs: u64,
     #[serde(default = "default_hc_timeout")]
@@ -169,7 +191,6 @@ pub struct HttpPool {
     #[serde(default)]
     pub routes: Vec<HttpRoute>,
 }
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpRoute {
     /// Match Host header (without port). Empty string matches any host.
@@ -210,6 +231,7 @@ impl Config {
         c.lb.http_pools.push(HttpPool {
             name: "demo-http".into(),
             listen: "127.0.0.1:9090".into(),
+            tls: None,
             health_interval_secs: 5,
             health_timeout_secs: 2,
             routes: vec![HttpRoute {
