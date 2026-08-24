@@ -121,11 +121,26 @@ pub struct BgpSpeaker {
     pub rib: RwLock<HashMap<Prefix, RibEntry>>,
 }
 
-/// A selected route in the RIB.
+/// One candidate route.
 #[derive(Debug, Clone)]
-pub struct RibEntry {
+pub struct Route {
     pub neighbor: String,
     pub as_path_len: u32,
+}
+
+/// All routes for a prefix; `best()` selects the shortest AS-path.
+#[derive(Debug, Clone, Default)]
+pub struct RibEntry {
+    pub routes: Vec<Route>,
+}
+
+impl RibEntry {
+    pub fn best(&self) -> Option<&Route> {
+        self.routes.iter().min_by_key(|r| r.as_path_len)
+    }
+    pub fn best_len(&self) -> u32 {
+        self.best().map(|r| r.as_path_len).unwrap_or(u32::MAX)
+    }
 }
 
 impl BgpSpeaker {
@@ -261,9 +276,23 @@ impl BgpSpeaker {
         };
         info!(neighbor = %neighbor, remote_as = ?effective_remote_as, hold = negotiated_hold, "session established");
 
-        // advertise configured networks
-        let networks: Vec<Prefix> =
+        // advertise configured networks, filtered by this neighbor's export policy
+        let all_networks: Vec<Prefix> =
             self.cfg.networks.iter().filter_map(|s| Prefix::parse(s)).collect();
+        let export: Option<&Vec<String>> = self
+            .cfg
+            .neighbors
+            .iter()
+            .find(|n| n.ip == neighbor)
+            .and_then(|n| n.export_allowlist.as_ref());
+        let networks: Vec<Prefix> = match export {
+            Some(list) if !list.is_empty() => all_networks
+                .into_iter()
+                .filter(|p| list.iter().any(|a| Prefix::parse(a) == Some(p.clone())))
+                .collect(),
+            Some(_) => Vec::new(), // explicit empty export list = advertise nothing
+            None => all_networks,
+        };
         if !networks.is_empty() {
             sock.write_all(&encode_update(&networks, &[], router_id, local_as))
                 .await?;
@@ -295,25 +324,39 @@ impl BgpSpeaker {
                             {
                                 let mut rib = self.rib.write().await;
                                 for w in &withdrawn {
-                                    // withdraw removes routes learned from ANY neighbor
-                                    rib.remove(w);
+                                    // withdrawal removes the route from that neighbor only
+                                    if let Some(entry) = rib.get_mut(w) {
+                                        entry.routes.retain(|r| r.neighbor != neighbor);
+                                        if entry.routes.is_empty() {
+                                            rib.remove(w);
+                                        }
+                                    }
                                 }
                                 for (p, plen) in announced {
-                                    // import policy: exact-match allowlist (empty = accept all)
-                                    if !self.cfg.import_allowlist.is_empty()
-                                        && !self.cfg.import_allowlist.iter().any(|a| Prefix::parse(a) == Some(p.clone()))
+                                    // import policy: per-neighbor override, else global exact-match list
+                                    let allowlist: &[String] = self
+                                        .cfg
+                                        .neighbors
+                                        .iter()
+                                        .find(|n| n.ip == neighbor)
+                                        .map(|n| n.effective_import(&self.cfg.import_allowlist))
+                                        .unwrap_or(&self.cfg.import_allowlist);
+                                    if !allowlist.is_empty()
+                                        && !allowlist.iter().any(|a| Prefix::parse(a) == Some(p.clone()))
                                     {
                                         tracing::debug!(neighbor=%neighbor, prefix=%p, "filtered by import allowlist");
                                         continue;
                                     }
                                     info!(neighbor=%neighbor, prefix=%p, as_path=plen, "learned route");
                                     self.update_session(&neighbor, |e| e.prefixes_received += 1).await;
-                                    match rib.get(&p) {
-                                        Some(existing) if existing.as_path_len <= plen => {
-                                            tracing::debug!(prefix=%p, "kept better/existing route");
-                                        }
-                                        _ => {
-                                            rib.insert(p, RibEntry { neighbor: neighbor.clone(), as_path_len: plen });
+                                    let entry = rib.entry(p).or_default();
+                                    match entry.routes.iter_mut().find(|r| r.neighbor == neighbor) {
+                                        Some(r) => r.as_path_len = plen,
+                                        None => {
+                                            if !self.cfg.multipath {
+                                                entry.routes.clear();
+                                            }
+                                            entry.routes.push(Route { neighbor: neighbor.clone(), as_path_len: plen });
                                         }
                                     }
                                 }

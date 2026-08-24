@@ -5,6 +5,7 @@ members = [
     "crates/lb",
     "crates/mesh",
     "crates/bgp",
+    "crates/acme",
     "crates/app",
 ]
 

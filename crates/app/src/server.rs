@@ -85,6 +85,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/mesh/status", get(api_mesh_status))
         .route("/metrics", get(api_metrics))
         .route("/api/reload", post(api_reload))
+        .route("/api/tls/reload", post(api_tls_reload))
         .route("/api/bgp/rib", get(api_rib))
         .route(
             "/api/lb/tcp/:name/backends",
@@ -186,11 +187,14 @@ async fn api_rib(axum::extract::State(state): axum::extract::State<Arc<AppState>
             let rib = bgp.rib.read().await;
             let mut routes: Vec<serde_json::Value> = rib
                 .iter()
-                .map(|(p, e)| {
-                    serde_json::json!({
-                        "prefix": p.to_string(),
-                        "neighbor": e.neighbor,
-                        "as_path_len": e.as_path_len,
+                .flat_map(|(p, e)| {
+                    e.routes.iter().map(move |r| {
+                        serde_json::json!({
+                            "prefix": p.to_string(),
+                            "neighbor": r.neighbor,
+                            "as_path_len": r.as_path_len,
+                            "best": e.best().map(|b| b.neighbor == r.neighbor).unwrap_or(false),
+                        })
                     })
                 })
                 .collect();
@@ -388,4 +392,26 @@ async fn api_reload(
         "applied": applied,
         "note": "listener/tls/bgp changes require restart"
     }))
+}
+
+/// Rebuild TLS acceptors for HTTP pools whose config has a TLS section.
+async fn api_tls_reload(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
+    if !authorized(&state, &headers) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    let mut results = Vec::new();
+    for pool_cfg in &state.config.lb.http_pools {
+        let Some(tls_cfg) = &pool_cfg.tls else { continue };
+        let Some(pool) = state.http_pools.iter().find(|p| p.name == pool_cfg.name) else {
+            continue;
+        };
+        match pool.reload_tls(tls_cfg).await {
+            Ok(()) => results.push(serde_json::json!({ "pool": pool_cfg.name, "reloaded": true })),
+            Err(e) => results.push(serde_json::json!({ "pool": pool_cfg.name, "reloaded": false, "error": e.to_string() })),
+        }
+    }
+    axum::Json(serde_json::json!({ "ok": true, "results": results }))
 }

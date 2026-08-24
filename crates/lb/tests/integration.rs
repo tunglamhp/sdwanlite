@@ -3,8 +3,8 @@
 use sdwanlite_lb::tcp::TcpLoadBalancer;
 use sdwanlite_lb::HttpLoadBalancer;
 use sdwanlite_core::{Algorithm, HttpPool, HttpRoute, TcpPool, TlsConfig};
-use std::io::Write as _;
 use std::sync::Arc;
+use futures_core::Stream as _;
 
 fn gen_self_signed(dir: &std::path::Path) -> (String, String) {
     // Use rcgen to mint a self-signed cert/key pair.
@@ -62,6 +62,7 @@ async fn tls_handshake_through_http_lb() {
     let pool = HttpPool {
         name: "tls-test".into(),
         listen: "127.0.0.1:0".into(),
+        backend_proto: sdwanlite_core::BackendProto::Http1,
         tls: Some(TlsConfig {
             cert_file: cert.clone(),
             key_file: key.clone(),
@@ -181,6 +182,81 @@ async fn tcp_conn_limit_rejects() {
         .expect("echo within timeout")
         .unwrap();
     assert_eq!(&buf, b"ping");
+
+    lb.stop();
+    server.abort();
+}
+
+#[tokio::test]
+async fn h2_upstream_roundtrip() {
+    // real h2 backend
+    let bl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let baddr = bl.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = bl.accept().await {
+            let mut conn = match h2::server::handshake(sock).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            tokio::spawn(async move {
+                while let Some(Ok((req, mut respond))) = conn.accept().await {
+                    let path = req.uri().path().to_string();
+                    tokio::spawn(async move {
+                        let body = format!("hello-h2 {path}");
+                        let resp = http::Response::builder()
+                            .status(200)
+                            .body(())
+                            .unwrap();
+                        if let Ok(mut tx) = respond.send_response(resp, false) {
+                            let _ = tx.send_data(body.into_bytes().into(), true);
+                        }
+                    });
+                }
+            });
+        }
+    });
+
+    let pool = HttpPool {
+        name: "h2-test".into(),
+        listen: "127.0.0.1:0".into(),
+        tls: None,
+        health_check_path: None,
+        backend_proto: sdwanlite_core::BackendProto::H2,
+        health_interval_secs: 60,
+        health_timeout_secs: 2,
+        routes: vec![HttpRoute {
+            host: String::new(),
+            path_prefix: "/".into(),
+            backends: vec![baddr],
+        }],
+    };
+    let lb = HttpLoadBalancer::bind(&pool).await.unwrap();
+    let local = lb.local_addr().unwrap();
+    let server = tokio::spawn({
+        let lb = lb.clone();
+        async move { lb.serve().await }
+    });
+
+    // plain HTTP/1.1 client -> LB -> h2 backend
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut c = tokio::net::TcpStream::connect(local).await.unwrap();
+    c.write_all(b"GET /world HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "timeout");
+        let mut buf = vec![0u8; 512];
+        match tokio::time::timeout(std::time::Duration::from_millis(500), c.read(&mut buf)).await {
+            Err(_) => continue,
+            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(n)) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&got);
+    assert!(text.contains("200"), "expected 200, got: {text}");
+    assert!(text.contains("hello-h2 /world"), "got: {text}");
 
     lb.stop();
     server.abort();

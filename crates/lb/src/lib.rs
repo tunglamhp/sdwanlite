@@ -4,7 +4,8 @@ pub mod http;
 pub use http::HttpLoadBalancer;
 
 
-mod tls;
+mod h2up;
+pub mod tls;
 pub use tls::load_tls_server_config;
 
 /// Unified accepted connection: plain TCP or TLS-wrapped.

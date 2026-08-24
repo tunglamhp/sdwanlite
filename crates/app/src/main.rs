@@ -83,6 +83,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ACME issuance/renewal
+    if config.acme.enabled {
+        let cfg = config.acme.clone();
+        tokio::spawn(async move {
+            sdwanlite_acme::renew_loop(cfg).await;
+        });
+    }
+
     // API + dashboard
     let addr = format!("{}:{}", config.general.api_addr, config.general.api_port);
     let app = server::router(state);

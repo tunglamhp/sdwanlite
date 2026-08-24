@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -21,7 +22,8 @@ pub struct HttpLoadBalancer {
     listener: TcpListener,
     algo: Algorithm,
     routes: Vec<Arc<Route>>,
-    tls: Option<tokio_rustls::TlsAcceptor>,
+    tls: RwLock<Option<tokio_rustls::TlsAcceptor>>,
+    proto: sdwanlite_core::BackendProto,
     stop: Arc<StopFlag>,
     max_conns: AtomicUsize,
     active_conns: AtomicUsize,
@@ -70,13 +72,14 @@ impl HttpLoadBalancer {
             listener,
             algo: Algorithm::LeastConnections,
             routes,
-            tls,
+            tls: RwLock::new(tls),
+            proto: pool.backend_proto,
             stop: Arc::new(StopFlag::default()),
             max_conns: AtomicUsize::new(0), // 0 = unlimited
             active_conns: AtomicUsize::new(0),
             rejected_conns: AtomicU64::new(0),
         });
-        tracing::info!(pool = %pool.name, listen = %pool.listen, tls = lb.tls.is_some(), "http load balancer listening");
+        tracing::info!(pool = %pool.name, listen = %pool.listen, tls = lb.tls.read().await.is_some(), "http load balancer listening");
         Ok(lb)
     }
 
@@ -114,6 +117,20 @@ impl HttpLoadBalancer {
         self.listener.local_addr()
     }
 
+    /// Rebuild the TLS acceptor from disk without dropping the listener.
+    pub async fn reload_tls(
+        &self,
+        tls_cfg: &sdwanlite_core::TlsConfig,
+    ) -> std::io::Result<()> {
+        let acceptor = tokio_rustls::TlsAcceptor::from(crate::load_tls_server_config(
+            std::path::Path::new(&tls_cfg.cert_file),
+            std::path::Path::new(&tls_cfg.key_file),
+        )?);
+        *self.tls.write().await = Some(acceptor);
+        tracing::info!(pool = %self.name, "tls acceptor reloaded");
+        Ok(())
+    }
+
     pub async fn serve(self: Arc<Self>) {
         loop {
             if self.stop.is_stopped() {
@@ -132,7 +149,8 @@ impl HttpLoadBalancer {
                     self.active_conns.fetch_add(1, Ordering::Relaxed);
 
                     // optional TLS termination
-                    let conn: Conn = match (&self.tls, sock) {
+                    let acceptor = self.tls.read().await.clone();
+                    let conn: Conn = match (acceptor, sock) {
                         (Some(acceptor), s) => match acceptor.accept(s).await {
                             Ok(t) => Conn::Tls(Box::new(t)),
                             Err(e) => {
@@ -196,6 +214,12 @@ impl HttpLoadBalancer {
             return Ok(());
         };
 
+        // ---- HTTP/2 upstream branch (buffered-body bridging) ----
+        if self.proto == sdwanlite_core::BackendProto::H2 {
+            return Self::h2_bridge(&self,&mut client, &buf, head_end, route, &path, peer_ip)
+                .await;
+        }
+
         // Rewrite head to include forwarded headers, keep body bytes intact.
         let mut out = rewrite_head_with_headers(buf[..head_end].to_vec(), &peer_ip.to_string());
         out.extend_from_slice(&buf[head_end..]);
@@ -228,6 +252,102 @@ impl HttpLoadBalancer {
         }
 
         write_simple_response(&mut client, 502, "no healthy backend").await
+    }
+
+    /// Bridge the buffered request onto an h2 backend and write back an
+    /// HTTP/1.1 response. Body is buffered up to 16 MiB.
+    async fn h2_bridge(
+        this: &Arc<Self>,
+        client: &mut Conn,
+        buf: &[u8],
+        head_end: usize,
+        route: &Arc<Route>,
+        path: &str,
+        peer_ip: IpAddr,
+    ) -> std::io::Result<()> {
+        const MAX_BODY: usize = 16 * 1024 * 1024;
+        let head_str = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+        let Some(head) = crate::h2up::parse_head(&head_str) else {
+            write_simple_response(client, 400, "Bad Request").await?;
+            return Ok(());
+        };
+
+        // buffer body until content-length satisfied or connection close
+        let content_len: usize = head
+            .headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.parse().ok())
+            .unwrap_or(0);
+        let mut body_bytes = buf[head_end..].to_vec();
+        if content_len > MAX_BODY {
+            write_simple_response(client, 413, "Payload Too Large").await?;
+            return Ok(());
+        }
+        while body_bytes.len() < content_len {
+            let mut tmp = [0u8; 16384];
+            let n = client.read(&mut tmp).await?;
+            if n == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&tmp[..n]);
+        }
+        body_bytes.truncate(content_len.max(body_bytes.len().min(content_len)));
+
+        let max_tries = route.backends.len().max(1);
+        for _ in 0..max_tries {
+            let Some(be) = select_backend(&route.backends, this.algo, &route.counter) else {
+                break;
+            };
+            match be.connect().await {
+                Ok(upstream) => {
+                    be.release(); // h2 session owns its own socket; release slot immediately
+                    drop(upstream);
+
+                    let mut fwd_head = head.clone();
+                    fwd_head
+                        .headers
+                        .push(("X-Forwarded-For".into(), peer_ip.to_string()));
+                    match crate::h2up::exchange(
+                        be.addr,
+                        &fwd_head,
+                        bytes::Bytes::from(body_bytes.clone()),
+                    )
+                    .await
+                    {
+                        Ok((status, headers, body)) => {
+                            let mut resp =
+                                format!("HTTP/1.1 {status}\r\n");
+                            for (n, v) in &headers {
+                                let skip = n.eq_ignore_ascii_case("transfer-encoding")
+                                    || n.eq_ignore_ascii_case("content-length")
+                                    || n.eq_ignore_ascii_case("connection");
+                                if !skip {
+                                    resp.push_str(&format!("{n}: {v}\r\n"));
+                                }
+                            }
+                            resp.push_str(&format!(
+                                "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            ));
+                            client.write_all(resp.as_bytes()).await?;
+                            client.write_all(&body).await?;
+                            tracing::trace!(pool=%this.name, path=%path, backend=%be.addr, "h2 proxied");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::debug!(backend=%be.addr, error=%e, "h2 exchange failed");
+                            be.set_healthy(false);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(backend = %be.addr, error = %e, "backend connect failed");
+                    be.set_healthy(false);
+                }
+            }
+        }
+        write_simple_response(client, 502, "no healthy backend").await
     }
 
     fn select_route(&self, host: &str, path: &str) -> Option<&Arc<Route>> {

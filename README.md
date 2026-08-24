@@ -8,9 +8,10 @@ Original implementation — not a fork of any existing appliance.
 | Crate | Purpose |
 |---|---|
 | `core` | TOML configuration model, shared types |
-| `lb` | L4 TCP load balancer (round-robin / least-connections / random) + HTTP/1.1 reverse proxy with TLS termination, host/path routing, health checks, X-Forwarded-For, connection limits, graceful stop, runtime backend add/remove |
+| `lb` | L4 TCP load balancer + HTTP reverse proxy with TLS termination, **HTTP/2 upstream support**, hot-reloadable TLS acceptors, host/path routing, TCP & HTTP health checks, byte counters, connection limits, runtime backend management |
 | `mesh` | WireGuard mesh control plane: native Curve25519 keypairs, `wg-quick` + `wg setconf` rendering, live peer add/remove, config validation, status via `wg` tools (Linux) |
-| `bgp` | RFC 4271 lab speaker: capabilities negotiation (RFC 5492, AS4), route refresh (RFC 2918), negotiated hold timers, IPv4-unicast NLRI, RIB with import allowlist |
+| `bgp` | RFC 4271 lab speaker: capabilities negotiation (AS4, route refresh), negotiated hold timers, best-path RIB by AS-path length with multipath option, per-neighbor import/export allowlists |
+| `acme` | Let's Encrypt automation: HTTP-01 challenge server, certificate issuance and daily renewal loop |
 | `app` (`sdwanlited`) | REST API + embedded dark-theme dashboard |
 
 ## Build
