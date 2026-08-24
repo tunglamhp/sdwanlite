@@ -95,9 +95,8 @@ embedded dark-theme dashboard.
 
 Known limitations (learning project): BGP policy framework is limited to
 local-pref and prefix allowlists (no communities / MED / full policy language);
-ACME DNS-01
-currently covers regular (non-wildcard) names via Cloudflare — wildcards
-still need an external tool; mesh apply requires Linux plus the `wg` tools;
+wildcard ACME certificates work via DNS-01 with a Cloudflare token
+(request rewriting wrapper); mesh apply requires Linux plus the `wg` tools;
 h2 upstream is bridge-grade rather than a full proxy implementation.
 
 ## License
