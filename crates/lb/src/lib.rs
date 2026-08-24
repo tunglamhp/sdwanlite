@@ -77,6 +77,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 
 #[derive(Debug)]
@@ -85,6 +86,8 @@ pub struct Backend {
     healthy: AtomicBool,
     active_conns: AtomicU64,
     total_conns: AtomicU64,
+    rx_bytes: AtomicU64,
+    tx_bytes: AtomicU64,
 }
 
 impl Backend {
@@ -94,6 +97,8 @@ impl Backend {
             healthy: AtomicBool::new(true),
             active_conns: AtomicU64::new(0),
             total_conns: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
         })
     }
 
@@ -111,6 +116,20 @@ impl Backend {
 
     pub fn total_conns(&self) -> u64 {
         self.total_conns.load(Ordering::Relaxed)
+    }
+
+    pub fn rx_bytes(&self) -> u64 {
+        self.rx_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn tx_bytes(&self) -> u64 {
+        self.tx_bytes.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn add_bytes(&self, up: u64, down: u64) {
+        // "up" = client->backend, "down" = backend->client
+        if up > 0 { self.tx_bytes.fetch_add(up, Ordering::Relaxed); }
+        if down > 0 { self.rx_bytes.fetch_add(down, Ordering::Relaxed); }
     }
 
     async fn connect(&self) -> std::io::Result<TcpStream> {
@@ -150,12 +169,60 @@ pub(crate) fn select_backend<'a>(
     }
 }
 
-/// Spawn a periodic TCP health checker for the given backends.
+/// Health check mode.
+#[derive(Clone, Debug)]
+pub enum HealthCheck {
+    /// Bare TCP connect.
+    Tcp,
+    /// HTTP GET to `path`; 2xx/3xx status counts as healthy.
+    Http(String),
+}
+
+impl HealthCheck {
+    pub fn from_path(path: Option<&String>) -> Self {
+        match path {
+            Some(p) => HealthCheck::Http(p.clone()),
+            None => HealthCheck::Tcp,
+        }
+    }
+}
+
+async fn probe(be: &Backend, mode: &HealthCheck, timeout: Duration) -> bool {
+    let attempt = async {
+        let mut sock = TcpStream::connect(be.addr).await?;
+        match mode {
+            HealthCheck::Tcp => Ok(true),
+            HealthCheck::Http(path) => {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let req = format!(
+                    "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                    be.addr
+                );
+                sock.write_all(req.as_bytes()).await?;
+                let mut buf = [0u8; 512];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                // "HTTP/1.1 200 OK" -> parse the status code token
+                let ok = head
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|c| c.parse::<u16>().ok())
+                    .map(|code| (200..400).contains(&code))
+                    .unwrap_or(false);
+                Ok::<bool, std::io::Error>(ok)
+            }
+        }
+    };
+    tokio::time::timeout(timeout, attempt).await.unwrap_or(Ok(false)).unwrap_or(false)
+}
+
+/// Spawn a periodic health checker for the given backends.
 pub(crate) fn spawn_health_checker(
     pool_name: String,
     backends: Vec<Arc<Backend>>,
     interval: std::time::Duration,
     timeout: std::time::Duration,
+    mode: HealthCheck,
 ) {
     if backends.is_empty() || interval.is_zero() {
         return;
@@ -164,10 +231,7 @@ pub(crate) fn spawn_health_checker(
         loop {
             tokio::time::sleep(interval).await;
             for be in &backends {
-                let ok = tokio::time::timeout(timeout, TcpStream::connect(be.addr))
-                    .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false);
+                let ok = probe(be, &mode, timeout).await;
                 if be.set_healthy(ok) {
                     tracing::info!(pool = %pool_name, backend = %be.addr, healthy = ok, "backend health changed");
                 }

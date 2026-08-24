@@ -117,7 +117,15 @@ impl std::fmt::Display for Prefix {
 pub struct BgpSpeaker {
     cfg: Arc<BgpConfig>,
     pub sessions: RwLock<HashMap<String, SessionInfo>>,
-    pub rib: RwLock<Vec<(String /*neighbor*/, Prefix)>>,
+    /// Best route per prefix (lowest AS-path length wins; ties -> first seen).
+    pub rib: RwLock<HashMap<Prefix, RibEntry>>,
+}
+
+/// A selected route in the RIB.
+#[derive(Debug, Clone)]
+pub struct RibEntry {
+    pub neighbor: String,
+    pub as_path_len: u32,
 }
 
 impl BgpSpeaker {
@@ -127,7 +135,7 @@ impl BgpSpeaker {
             .iter()
             .map(|n| (n.ip.clone(), SessionInfo::default()))
             .collect();
-        Arc::new(Self { cfg, sessions: RwLock::new(sessions), rib: RwLock::new(Vec::new()) })
+        Arc::new(Self { cfg, sessions: RwLock::new(sessions), rib: RwLock::new(HashMap::new()) })
     }
 
     async fn set_state(&self, neighbor: &str, st: SessionState) {
@@ -284,20 +292,31 @@ impl BgpSpeaker {
                         MSG_UPDATE => {
                             self.update_session(&neighbor, |e| e.updates_received += 1).await;
                             let (announced, withdrawn) = parse_update(&msg.body);
-                            if !withdrawn.is_empty() {
-                                self.rib.write().await.retain(|(_, p)| !withdrawn.contains(p));
-                            }
-                            for p in announced {
-                                // import policy: exact-match allowlist (empty = accept all)
-                                if !self.cfg.import_allowlist.is_empty()
-                                    && !self.cfg.import_allowlist.iter().any(|a| Prefix::parse(a) == Some(p.clone()))
-                                {
-                                    tracing::debug!(neighbor=%neighbor, prefix=%p, "filtered by import allowlist");
-                                    continue;
+                            {
+                                let mut rib = self.rib.write().await;
+                                for w in &withdrawn {
+                                    // withdraw removes routes learned from ANY neighbor
+                                    rib.remove(w);
                                 }
-                                info!(neighbor=%neighbor, prefix=%p, "learned route");
-                                self.update_session(&neighbor, |e| e.prefixes_received += 1).await;
-                                self.rib.write().await.push((neighbor.clone(), p));
+                                for (p, plen) in announced {
+                                    // import policy: exact-match allowlist (empty = accept all)
+                                    if !self.cfg.import_allowlist.is_empty()
+                                        && !self.cfg.import_allowlist.iter().any(|a| Prefix::parse(a) == Some(p.clone()))
+                                    {
+                                        tracing::debug!(neighbor=%neighbor, prefix=%p, "filtered by import allowlist");
+                                        continue;
+                                    }
+                                    info!(neighbor=%neighbor, prefix=%p, as_path=plen, "learned route");
+                                    self.update_session(&neighbor, |e| e.prefixes_received += 1).await;
+                                    match rib.get(&p) {
+                                        Some(existing) if existing.as_path_len <= plen => {
+                                            tracing::debug!(prefix=%p, "kept better/existing route");
+                                        }
+                                        _ => {
+                                            rib.insert(p, RibEntry { neighbor: neighbor.clone(), as_path_len: plen });
+                                        }
+                                    }
+                                }
                             }
                         }
                         MSG_KEEPALIVE => {}
@@ -488,7 +507,7 @@ fn parse_prefixes(buf: &[u8]) -> Vec<Prefix> {
     out
 }
 
-fn parse_update(body: &[u8]) -> (Vec<Prefix>, Vec<Prefix>) {
+fn parse_update(body: &[u8]) -> (Vec<(Prefix, u32)>, Vec<Prefix>) {
     if body.len() < 4 {
         return (Vec::new(), Vec::new());
     }
@@ -501,7 +520,47 @@ fn parse_update(body: &[u8]) -> (Vec<Prefix>, Vec<Prefix>) {
     }
 
     let withdrawn = parse_prefixes(&body[4..4 + wd_len]);
-    let announced = parse_prefixes(&body[4 + wd_len + attr_len..]);
+
+    // walk path attributes to find AS_PATH (type 2) length
+    let attrs = &body[4 + wd_len..4 + wd_len + attr_len];
+    let mut as_path_len = 0u32;
+    let mut pos = 0usize;
+    while pos + 2 <= attrs.len() {
+        let flags = attrs[pos];
+        let atype = attrs[pos + 1];
+        let len = if flags & 0x10 != 0 {
+            // extended length
+            match attrs.get(pos + 2..pos + 4) {
+                Some(b) => u16::from_be_bytes([b[0], b[1]]) as usize,
+                None => break,
+            }
+        } else {
+            attrs[pos + 2] as usize
+        };
+        let hdr = if flags & 0x10 != 0 { 4 } else { 3 };
+        if atype == 2 && data_ok(attrs, pos + hdr, len) {
+            // count ASes across segments: seg type(1) count(1) then 2/4 bytes each
+            let data = &attrs[pos + hdr..pos + hdr + len];
+            let mut sp = 0usize;
+            while sp + 2 <= data.len() {
+                let seg_type = data[sp];
+                let count = data[sp + 1] as usize;
+                let width = if seg_type == 1 || seg_type == 3 { 2 } else { 4 }; // AS_SEQUENCE/AS_SET vs AS4
+                as_path_len += count as u32;
+                sp += 2 + count * width;
+            }
+        }
+        pos += hdr + len;
+    }
+
+    fn data_ok(b: &[u8], off: usize, len: usize) -> bool {
+        off + len <= b.len()
+    }
+
+    let announced = parse_prefixes(&body[4 + wd_len + attr_len..])
+        .into_iter()
+        .map(|p| (p, as_path_len))
+        .collect();
     (announced, withdrawn)
 }
 
@@ -530,7 +589,10 @@ mod tests {
         assert_eq!(msg[18], MSG_UPDATE);
         let (got_ann, got_wd) = parse_update(&msg[19..total]);
         assert_eq!(got_wd, withdrawn);
-        assert_eq!(got_ann, announced);
+        let got_ann_pfx: Vec<Prefix> = got_ann.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(got_ann_pfx, announced);
+        // single-AS path from encode_update -> len 1
+        assert!(got_ann.iter().all(|(_, l)| *l == 1));
     }
 
     #[test]

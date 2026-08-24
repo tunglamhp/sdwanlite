@@ -83,6 +83,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/lb", get(api_lb))
         .route("/api/mesh/keypair", get(api_keypair))
         .route("/api/mesh/status", get(api_mesh_status))
+        .route("/metrics", get(api_metrics))
+        .route("/api/reload", post(api_reload))
         .route("/api/bgp/rib", get(api_rib))
         .route(
             "/api/lb/tcp/:name/backends",
@@ -182,10 +184,17 @@ async fn api_rib(axum::extract::State(state): axum::extract::State<Arc<AppState>
     match &state.bgp {
         Some(bgp) => {
             let rib = bgp.rib.read().await;
-            let routes: Vec<serde_json::Value> = rib
+            let mut routes: Vec<serde_json::Value> = rib
                 .iter()
-                .map(|(n, p)| serde_json::json!({ "neighbor": n, "prefix": p.to_string() }))
+                .map(|(p, e)| {
+                    serde_json::json!({
+                        "prefix": p.to_string(),
+                        "neighbor": e.neighbor,
+                        "as_path_len": e.as_path_len,
+                    })
+                })
                 .collect();
+            routes.sort_by_key(|r| r["prefix"].as_str().unwrap_or("").to_string());
             axum::Json(serde_json::json!({ "count": routes.len(), "routes": routes }))
         }
         None => axum::Json(serde_json::json!({ "count": 0, "routes": [] })),
@@ -269,4 +278,114 @@ async fn api_remove_backend(
     };
     let removed = pool.remove_backend(addr).await;
     axum::Json(serde_json::json!({ "ok": removed }))
+}
+
+/// Prometheus text exposition of pool/backend metrics.
+async fn api_metrics(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Html<String> {
+    let mut out = String::with_capacity(4096);
+    out.push_str("# HELP sdwanlite_backend_healthy Backend reachability (1 healthy, 0 down).\n");
+    out.push_str("# TYPE sdwanlite_backend_healthy gauge\n");
+    out.push_str("# HELP sdwanlite_backend_conns Connection counters per backend.\n");
+    out.push_str("# TYPE sdwanlite_backend_conns counter\n");
+
+    for pool in &state.tcp_pools {
+        for b in pool.backends().await {
+            let lbl = format!("{{pool=\"tcp:{}\",backend=\"{}\"}}", pool.name, b.addr);
+            out.push_str(&format!("sdwanlite_backend_healthy{lbl} {}\n", b.is_healthy() as u8));
+            out.push_str(&format!("sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"active\"}} {}\n", pool.name, b.addr, b.active_conns()));
+            out.push_str(&format!("sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"total\"}} {}\n", pool.name, b.addr, b.total_conns()));
+            out.push_str(&format!("sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"rx\"}} {}\n", pool.name, b.addr, b.rx_bytes()));
+            out.push_str(&format!("sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"tx\"}} {}\n", pool.name, b.addr, b.tx_bytes()));
+        }
+        out.push_str(&format!(
+            "sdwanlite_pool_rejected{{pool=\"tcp:{}\"}} {}\n",
+            pool.name,
+            pool.rejected_conns()
+        ));
+    }
+    for pool in &state.http_pools {
+        for backends in pool.backends_by_route() {
+            for b in &backends {
+                let lbl = format!("{{pool=\"http:{}\",backend=\"{}\"}}", pool.name, b.addr);
+                out.push_str(&format!("sdwanlite_backend_healthy{lbl} {}\n", b.is_healthy() as u8));
+                out.push_str(&format!("sdwanlite_backend_conns{{pool=\"http:{}\",backend=\"{}\",kind=\"total\"}} {}\n", pool.name, b.addr, b.total_conns()));
+            }
+        }
+    }
+
+    let (rib_size, sessions_est) = match &state.bgp {
+        Some(b) => {
+            let rib_size = b.rib.read().await.len();
+            let sessions_est = b
+                .sessions
+                .read()
+                .await
+                .values()
+                .filter(|i| i.state == sdwanlite_bgp::SessionState::Established)
+                .count() as u64;
+            (rib_size, sessions_est)
+        }
+        None => (0, 0),
+    };
+    out.push_str("# HELP sdwanlite_bgp_rib_routes Current best-path RIB size.\n# TYPE sdwanlite_bgp_rib_routes gauge\n");
+    out.push_str(&format!("sdwanlite_bgp_rib_routes {rib_size}\n"));
+    out.push_str("# HELP sdwanlite_bgp_sessions_established Established BGP sessions.\n# TYPE sdwanlite_bgp_sessions_established gauge\n");
+    out.push_str(&format!("sdwanlite_bgp_sessions_established {sessions_est}\n"));
+    out.push_str(&format!(
+        "# HELP sdwanlite_uptime_seconds Process uptime in seconds.\n# TYPE sdwanlite_uptime_seconds counter\nsdwanlite_uptime_seconds {}\n",
+        state.started.elapsed().as_secs()
+    ));
+    axum::response::Html(out)
+}
+
+/// Re-read the config file and synchronise TCP-pool backends with it.
+/// Listener/TLS/BGP changes still require a process restart; the response
+/// reports what was applied and what needs a restart.
+async fn api_reload(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
+    if !authorized(&state, &headers) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    let path = std::path::PathBuf::from("sdwanlite.toml");
+    let new_cfg = match sdwanlite_core::Config::load(&path) {
+        Ok(c) => c,
+        Err(e) => return axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
+
+    let mut applied: Vec<serde_json::Value> = Vec::new();
+    for desired in &new_cfg.lb.tcp_pools {
+        if let Some(pool) = state.tcp_pools.iter().find(|p| p.name == desired.name) {
+            // algorithm / limits live-update where possible
+            let want: Vec<std::net::SocketAddr> =
+                desired.backends.iter().filter_map(|s| s.parse().ok()).collect();
+            let current = pool.backends().await;
+            for w in &want {
+                if !current.iter().any(|c| c.addr == *w) {
+                    pool.add_backend(*w).await;
+                    applied.push(serde_json::json!({"pool": desired.name, "added": w.to_string()}));
+                }
+            }
+            for c in &current {
+                if !want.contains(&c.addr) {
+                    pool.remove_backend(c.addr).await;
+                    applied.push(serde_json::json!({"pool": desired.name, "removed": c.addr.to_string()}));
+                }
+            }
+        } else {
+            applied.push(serde_json::json!({
+                "restart_required": true,
+                "reason": format!("new pool '{}' requires process restart", desired.name)
+            }));
+        }
+    }
+
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "applied": applied,
+        "note": "listener/tls/bgp changes require restart"
+    }))
 }

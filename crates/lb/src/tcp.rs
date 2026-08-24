@@ -1,6 +1,6 @@
 //! Layer-4 TCP load balancer with transparent bidirectional forwarding.
 
-use crate::{select_backend, spawn_health_checker, Backend, StopFlag};
+use crate::{select_backend, spawn_health_checker, Backend, HealthCheck, StopFlag};
 use sdwanlite_core::{Algorithm, TcpPool};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -46,6 +46,7 @@ impl TcpLoadBalancer {
             hc_backends,
             Duration::from_secs(pool.health_interval_secs),
             Duration::from_secs(pool.health_timeout_secs),
+            HealthCheck::from_path(pool.health_check_path.as_ref()),
         );
         tracing::info!(pool = %pool.name, listen = %pool.listen, "tcp load balancer listening");
         Ok(lb)
@@ -143,6 +144,9 @@ impl TcpLoadBalancer {
             match be.connect().await {
                 Ok(mut upstream) => {
                     let res = copy_bidirectional(&mut client, &mut upstream).await;
+                    if let Ok((up, down)) = res {
+                        be.add_bytes(up, down);
+                    }
                     be.release();
                     upstream.shutdown().await.ok();
                     return res.map(|_| ());

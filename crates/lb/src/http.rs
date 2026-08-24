@@ -1,6 +1,6 @@
 //! HTTP/1.1 reverse proxy with host/path routing and optional TLS termination.
 
-use crate::{select_backend, spawn_health_checker, Backend, Conn, StopFlag};
+use crate::{select_backend, spawn_health_checker, Backend, HealthCheck, Conn, StopFlag};
 use sdwanlite_core::{Algorithm, HttpPool};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -60,6 +60,9 @@ impl HttpLoadBalancer {
                 r.backends.clone(),
                 Duration::from_secs(pool.health_interval_secs.max(1)),
                 Duration::from_secs(pool.health_timeout_secs),
+                HealthCheck::from_path(
+                    pool.health_check_path.as_ref().or(Some(&"/".to_string())),
+                ),
             );
         }
         let lb = Arc::new(Self {
@@ -75,6 +78,11 @@ impl HttpLoadBalancer {
         });
         tracing::info!(pool = %pool.name, listen = %pool.listen, tls = lb.tls.is_some(), "http load balancer listening");
         Ok(lb)
+    }
+
+    /// Backend lists per route (for metrics).
+    pub fn backends_by_route(&self) -> Vec<Vec<Arc<Backend>>> {
+        self.routes.iter().map(|r| r.backends.clone()).collect()
     }
 
     /// (host, path_prefix, backend_count) per route.
@@ -204,10 +212,13 @@ impl HttpLoadBalancer {
                         return Err(e);
                     }
                     let res = pump(&mut client, &mut upstream).await;
+                    if let Ok((up, down)) = &res {
+                        be.add_bytes(*up, *down);
+                    }
                     be.release();
                     upstream.shutdown().await.ok();
                     tracing::trace!(pool=%self.name, path=%path, backend=%be.addr, "proxied");
-                    return res;
+                    return res.map(|_| ());
                 }
                 Err(e) => {
                     tracing::debug!(backend = %be.addr, error = %e, "backend connect failed");
@@ -229,18 +240,22 @@ impl HttpLoadBalancer {
 }
 
 /// Pump raw bytes both directions until either side closes or errors.
-async fn pump(a: &mut Conn, b: &mut TcpStream) -> std::io::Result<()> {
+/// Returns (client->backend bytes, backend->client bytes).
+async fn pump(a: &mut Conn, b: &mut TcpStream) -> std::io::Result<(u64, u64)> {
     let (mut a_rd, mut a_wr) = tokio::io::split(a);
     let (mut b_rd, mut b_wr) = tokio::io::split(b);
 
     let up = tokio::io::copy(&mut a_rd, &mut b_wr);
     let down = tokio::io::copy(&mut b_rd, &mut a_wr);
 
+    // Whichever direction finishes first ends the exchange.
+    let mut up_n = 0u64;
+    let mut down_n = 0u64;
     tokio::select! {
-        r = up => { r?; }
-        r = down => { r?; }
+        r = up => { up_n = r?; }
+        r = down => { down_n = r?; }
     }
-    Ok(())
+    Ok((up_n, down_n))
 }
 
 fn find_head_end(buf: &[u8]) -> Option<usize> {
