@@ -63,6 +63,13 @@ pub struct Acme {
     /// Renew when less than this many days remain (default 30).
     #[serde(default = "default_renew_days")]
     pub renew_days: u32,
+    /// Use the DNS-01 challenge instead of HTTP-01. Required for wildcard
+    /// names; currently supports Cloudflare via API token.
+    #[serde(default)]
+    pub dns01: bool,
+    /// Cloudflare API token with Zone.DNS Edit permission.
+    #[serde(default)]
+    pub cloudflare_api_token: Option<String>,
 }
 
 fn default_acme_directory() -> String {
