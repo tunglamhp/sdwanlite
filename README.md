@@ -93,10 +93,10 @@ allowlist policies and best-path/multipath RIB, Let's Encrypt automation
 embedded dark-theme dashboard.
 
 Known limitations (learning project): BGP has no route reflection and no
-full RIB policy framework (only local-pref + prefix allowlists); ACME is
-HTTP-01 only (no TLS-ALPN/DNS-01, so wildcard certificates need DNS-01
-elsewhere); mesh apply requires Linux plus the `wg` tools; h2 upstream is
-bridge-grade rather than a full proxy implementation.
+full RIB policy framework (only local-pref + prefix allowlists); ACME DNS-01
+currently covers regular (non-wildcard) names via Cloudflare — wildcards
+still need an external tool; mesh apply requires Linux plus the `wg` tools;
+h2 upstream is bridge-grade rather than a full proxy implementation.
 
 ## License
 
