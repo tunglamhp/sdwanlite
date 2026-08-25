@@ -143,6 +143,7 @@ async fn tcp_conn_limit_rejects() {
         listen: "127.0.0.1:0".into(),
         algorithm: Algorithm::RoundRobin,
         health_check_path: None,
+        qos: None,
         health_interval_secs: 60, // don't interfere
         health_timeout_secs: 2,
         backends: vec![baddr],
