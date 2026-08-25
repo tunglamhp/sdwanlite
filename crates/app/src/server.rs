@@ -14,6 +14,7 @@ pub struct AppState {
     pub tcp_pools: Vec<Arc<TcpLoadBalancer>>,
     pub http_pools: Vec<Arc<HttpLoadBalancer>>,
     pub bgp: Option<Arc<BgpSpeaker>>,
+    pub alerts: Arc<sdwanlite_lb::AlertLog>,
 }
 
 #[derive(Serialize)]
@@ -87,6 +88,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/events", get(api_events))
         .route("/api/reload", post(api_reload))
         .route("/api/tls/reload", post(api_tls_reload))
+        .route("/api/alerts", get(api_alerts))
+        .route("/api/firewall", get(api_firewall_list).post(api_firewall_add).delete(api_firewall_delete))
         .route("/api/bgp/rib", get(api_rib))
         .route(
             "/api/lb/tcp/:name/backends",
@@ -443,4 +446,47 @@ async fn api_events(
         Ok(ev)
     });
     axum::response::Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ---------------------------------------------------------------------------
+// Alerts + Firewall API
+// ---------------------------------------------------------------------------
+
+async fn api_alerts(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let events = state.alerts.list();
+    let list: Vec<serde_json::Value> = events.iter().map(|e| {
+        serde_json::json!({ "timestamp": e.timestamp, "severity": e.severity, "source": e.source, "message": e.message })
+    }).collect();
+    axum::Json(serde_json::json!({ "count": list.len(), "events": list }))
+}
+
+async fn api_firewall_list(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "rules": state.config.firewall }))
+}
+
+async fn api_firewall_add(
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::Json(rule): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    if !authorized(&_state, &headers) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    // firewall rules are read from config; dynamic add requires restart
+    axum::Json(serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; add to sdwanlite.toml and restart" }))
+}
+
+async fn api_firewall_delete(
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::Json(_body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    if !authorized(&_state, &headers) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    axum::Json(serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; edit sdwanlite.toml and restart" }))
 }

@@ -78,6 +78,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -247,4 +248,69 @@ pub(crate) fn spawn_health_checker(
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Firewall enforcement
+// ---------------------------------------------------------------------------
+
+/// Check if a connection from `source_ip` on `port` is allowed by the firewall rules.
+/// Rules are evaluated in order; first match wins. No match = allow.
+pub fn firewall_check(
+    rules: &[sdwanlite_core::FirewallRule],
+    source_ip: &str,
+    port: u16,
+    protocol: &str,
+) -> bool {
+    for rule in rules {
+        if rule.port != port && rule.port != 0 {
+            continue;
+        }
+        if rule.protocol != "any" && rule.protocol != protocol {
+            continue;
+        }
+        if let Some(src) = &rule.source {
+            if !src.is_empty() && !source_ip.starts_with(src.trim_end_matches('*')) {
+                continue;
+            }
+        }
+        return rule.action == "allow";
+    }
+    true // default allow
+}
+
+// ---------------------------------------------------------------------------
+// Alert event log (ring buffer)
+// ---------------------------------------------------------------------------
+
+pub struct AlertLog {
+    events: Mutex<Vec<sdwanlite_core::AlertEvent>>,
+    max: usize,
+}
+
+impl AlertLog {
+    pub fn new(max: usize) -> Self {
+        Self { events: Mutex::new(Vec::new()), max }
+    }
+
+    pub fn push(&self, severity: &str, source: &str, message: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut events = self.events.lock().unwrap();
+        events.push(sdwanlite_core::AlertEvent {
+            timestamp: now,
+            severity: severity.into(),
+            source: source.into(),
+            message: message.into(),
+        });
+        if events.len() > self.max {
+            events.remove(0);
+        }
+    }
+
+    pub fn list(&self) -> Vec<sdwanlite_core::AlertEvent> {
+        self.events.lock().unwrap().clone()
+    }
 }

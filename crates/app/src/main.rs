@@ -63,12 +63,14 @@ async fn main() -> Result<()> {
         None
     };
 
+    let alerts = Arc::new(sdwanlite_lb::AlertLog::new(500));
     let state = Arc::new(server::AppState {
         config: config.clone(),
         started: Instant::now(),
         tcp_pools,
         http_pools,
         bgp,
+        alerts,
     });
 
     for pool in &state.tcp_pools {
