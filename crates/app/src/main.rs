@@ -97,7 +97,17 @@ async fn main() -> Result<()> {
 
     // API + dashboard
     let addr = format!("{}:{}", config.general.api_addr, config.general.api_port);
-    let app = server::router(Arc::clone(&state));
+    let ui = if std::path::Path::new("web-dist/index.html").exists() {
+        tower_http::services::ServeDir::new("web-dist")
+            .append_index_html_on_directories(true)
+            .fallback(axum::routing::get(server::legacy_dashboard))
+    } else {
+        tower_http::services::ServeDir::new("nonexistent")
+            .fallback(axum::routing::get(server::legacy_dashboard))
+    };
+
+    let app = server::router(Arc::clone(&state)).fallback_service(ui);
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("api + dashboard listening on http://{addr}");
 
@@ -116,3 +126,4 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+

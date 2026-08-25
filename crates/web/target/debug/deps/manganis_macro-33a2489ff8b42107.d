@@ -1,0 +1,10 @@
+A:\web\sdwan\sdwanlite\crates\web\target\debug\deps\manganis_macro-33a2489ff8b42107.d: C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\lib.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\asset.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\css_module.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\ffi.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\linker.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\../README.md
+
+A:\web\sdwan\sdwanlite\crates\web\target\debug\deps\manganis_macro-33a2489ff8b42107.dll: C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\lib.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\asset.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\css_module.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\ffi.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\linker.rs C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\../README.md
+
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\lib.rs:
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\asset.rs:
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\css_module.rs:
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\ffi.rs:
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\linker.rs:
+C:\Users\lam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\manganis-macro-0.7.10\src\../README.md:

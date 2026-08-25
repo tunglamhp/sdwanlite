@@ -1,271 +1,224 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sdwanlite — control panel</title>
 <style>
-  :root {
-    --bg: #0b0f14; --panel: #12181f; --panel2: #171e27; --border: #232b36;
-    --text: #e6edf3; --muted: #8b98a5;
-    --accent: #00d2ff; --accent2: #3a7bd5;
-    --green: #34d399; --red: #f87171; --amber: #fbbf24;
-    --radius: 14px;
-  }
-  * { box-sizing: border-box; margin: 0; }
-  body {
-    background:
-      radial-gradient(1200px 500px at 80% -10%, rgba(58,123,213,.12), transparent),
-      radial-gradient(900px 400px at -10% 110%, rgba(0,210,255,.07), transparent),
-      var(--bg);
-    color: var(--text);
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-    min-height: 100vh; padding: 28px clamp(16px, 4vw, 48px);
-  }
-  .wrap { max-width: 1200px; margin: auto; }
-
-  header { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
-  .logo {
-    width: 52px; height: 52px; border-radius: 14px; flex: none;
-    background: linear-gradient(135deg, #0f2027, #2c5364);
-    border: 1px solid #2c5364aa;
-    display: grid; place-items: center;
-    color: #00d2ff; font-weight: 800; font-size: 20px;
-    box-shadow: 0 0 24px rgba(0,210,255,.15);
-  }
-  h1 { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
-  h1 small { display: block; color: var(--muted); font-size: 11px; letter-spacing: 3px; font-weight: 600; margin-top: 2px; }
-  .spacer { flex: 1; }
-  .live { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-  .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); animation: pulse 1.6s infinite; }
-  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.5)} 50%{box-shadow:0 0 0 6px rgba(52,211,153,0)} }
-
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 22px; }
-  .kpi {
-    background: linear-gradient(180deg, var(--panel), var(--panel2));
-    border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 16px 18px; position: relative; overflow: hidden;
-    transition: transform .15s ease, border-color .15s ease;
-  }
-  .kpi:hover { transform: translateY(-2px); border-color: #3a7bd566; }
-  .kpi::before { content:""; position:absolute; inset:0 0 auto 0; height:2px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity:.5; }
-  .kpi .label { font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
-  .kpi .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
-  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
-
-  section { margin-bottom: 26px; }
-  section > h2 {
-    font-size: 13px; letter-spacing: 1.6px; text-transform: uppercase;
-    color: var(--muted); margin: 0 0 10px 2px; display:flex; align-items:center; gap:8px;
-  }
-  section > h2::before { content:""; width: 3px; height: 14px; border-radius: 2px; background: var(--accent); }
-
-  .card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 18px;
-  }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
-
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th { text-align:left; color:var(--muted); font-weight:600; font-size:11px; letter-spacing:1px;
-       text-transform:uppercase; padding:6px 8px; border-bottom:1px solid var(--border); }
-  td { padding: 8px; border-bottom: 1px solid #1a222d; }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background:#182130; }
-  code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; color:#9ecbff; }
-
-  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
-          font-size:11.5px; font-weight:600; }
-  .pill.ok   { background:rgba(52,211,153,.12); color:var(--green); }
-  .pill.bad  { background:rgba(248,113,113,.12); color:var(--red); }
-  .pill.warn { background:rgba(251,191,36,.12);  color:var(--amber); }
-  .pill.info { background:rgba(88,166,255,.12);  color:var(--accent); }
-  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
-  .dot.g{background:var(--green)} .dot.r{background:var(--red)}
-
-  button { background:#1c2634; color:var(--accent); border:1px solid #2a3a4d;
-           border-radius:8px; padding:6px 14px; cursor:pointer; font-size:12.5px; font-weight:600;
-           transition: background .15s; }
-  button:hover { background:#243044; }
-  pre.keys { background:#0d1319; border:1px solid var(--border); border-radius:8px;
-             padding:10px 12px; font-size:12px; color:#9ecbff; white-space:pre-wrap;
-             font-family:Consolas,monospace; margin-top:10px; display:none; }
-  canvas#sparkline { width:100%; height:56px; display:block; margin-top:8px; }
-  footer { text-align:center; color:var(--muted); font-size:12px; margin-top:30px; }
-  .fade { animation: fadein .35s ease; }
-  @keyframes fadein { from{opacity:0; transform:translateY(4px)} to{opacity:1} }
+:root { --bg:#0b0f14; --panel:#12181f; --panel2:#171e27; --border:#232b36; --text:#e6edf3;
+  --muted:#8b98a5; --hover:#182130; --accent:#00d2ff; --green:#34d399; --red:#f87171; --amber:#fbbf24; }
+[data-theme="light"] { --bg:#f2f5f9; --panel:#fff; --panel2:#f7f9fc; --border:#dde4ec;
+  --text:#1a2330; --muted:#5c6b7c; --hover:#eef3f8; --accent:#0e7fd6; }
+* { box-sizing:border-box; margin:0; }
+body { background:var(--bg); color:var(--text); font-family:"Segoe UI",system-ui,sans-serif; transition:background .25s,color .25s; }
+.wrap { max-width:1240px; margin:auto; padding:20px clamp(14px,3vw,40px); }
+header { display:flex; align-items:center; gap:14px; padding:6px 0 14px; }
+.logo { width:46px; height:46px; border-radius:12px; background:linear-gradient(135deg,#0f2027,#2c5364);
+  display:grid; place-items:center; color:#00d2ff; font-weight:800; font-size:18px; }
+h1 { font-size:19px; } h1 small { display:block; color:var(--muted); font-size:10px; letter-spacing:3px; font-weight:600; }
+.spacer { flex:1; }
+.live { display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--muted); }
+.live-dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 1.6s infinite; }
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.5)} 50%{box-shadow:0 0 0 6px rgba(52,211,153,0)} }
+.icon-btn { background:none; border:1px solid var(--border); border-radius:8px; width:34px; height:34px;
+  cursor:pointer; font-size:15px; color:var(--text); display:grid; place-items:center; }
+.icon-btn:hover { border-color:var(--accent); }
+nav { display:flex; gap:4px; border-bottom:1px solid var(--border); margin-bottom:18px; overflow-x:auto; }
+nav button { background:none; border:none; color:var(--muted); padding:10px 15px; font-size:13.5px;
+  font-weight:600; cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
+nav button:hover { color:var(--text); }
+nav button.active { color:var(--accent); border-bottom-color:var(--accent); }
+.view { display:none; animation:fadein .25s ease; } .view.active { display:block; }
+@keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1} }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-bottom:18px; }
+.kpi { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px 16px; }
+.kpi:hover { border-color:var(--accent); }
+.kpi .label { font-size:10.5px; letter-spacing:1.3px; text-transform:uppercase; color:var(--muted); }
+.kpi .value { font-size:24px; font-weight:700; margin-top:5px; }
+.kpi .sub { font-size:11.5px; color:var(--muted); margin-top:3px; }
+.card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:14px; }
+.card h3 { font-size:12px; letter-spacing:1.4px; text-transform:uppercase; color:var(--muted); margin-bottom:10px; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@media(max-width:820px){ .grid2{grid-template-columns:1fr} }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--muted); font-weight:600; font-size:10.5px; letter-spacing:1px;
+  text-transform:uppercase; padding:6px 8px; border-bottom:1px solid var(--border); }
+td { padding:7px 8px; border-bottom:1px solid var(--border); }
+tr:last-child td { border-bottom:none; } tr:hover td { background:var(--hover); }
+.mono { font-family:Consolas,monospace; font-size:12px; color:var(--accent); }
+.pill { display:inline-flex; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; }
+.pill.ok{background:rgba(52,211,153,.13);color:var(--green)}
+.pill.bad{background:rgba(248,113,113,.13);color:var(--red)}
+.pill.warn{background:rgba(251,191,36,.13);color:var(--amber)}
+.pill.info{background:rgba(88,166,255,.13);color:var(--accent)}
+[data-theme="light"] .pill.ok{background:#d8f5e8} [data-theme="light"] .pill.bad{background:#fde2e2}
+[data-theme="light"] .pill.warn{background:#fdf1d6} [data-theme="light"] .pill.info{background:#ddeffd}
+.btn { background:var(--panel2); color:var(--accent); border:1px solid var(--border); border-radius:8px;
+  padding:6px 14px; cursor:pointer; font-size:12.5px; font-weight:600; }
+.btn:hover { border-color:var(--accent); }
+.btn.danger { color:var(--red); }
+pre.keys { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px;
+  font-size:12px; color:var(--accent); white-space:pre-wrap; font-family:Consolas,monospace; margin-top:10px; display:none; }
+#topo-svg { width:100%; height:520px; background:var(--bg); border:1px solid var(--border);
+  border-radius:10px; cursor:grab; touch-action:none; }
+#topo-svg:active { cursor:grabbing; }
+.topo-toolbar { display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; align-items:center; }
+.topo-toolbar .lbl { color:var(--muted); font-size:12px; margin-right:4px; }
+.actions-bar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+.act-btn { background:var(--panel2); border:1px solid var(--border); border-radius:10px; color:var(--text);
+  padding:10px 18px; cursor:pointer; font-weight:600; font-size:13px; transition:all .15s; }
+.act-btn:hover { border-color:var(--accent); color:var(--accent); }
+.form-row { display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-top:10px; }
+.form-row label { font-size:11px; color:var(--muted); display:block; margin-bottom:3px; }
+.form-row input, .form-row select { background:var(--bg); border:1px solid var(--border); color:var(--text);
+  border-radius:6px; padding:6px 8px; font-size:12.5px; }
+footer { text-align:center; color:var(--muted); font-size:12px; margin-top:26px; }
+canvas#sparkline { width:100%; height:56px; display:block; }
 </style>
 </head>
+
 <body>
 <div class="wrap">
-
 <header>
   <div class="logo">SL</div>
   <h1>SDWANLite<small>CONTROL PANEL</small></h1>
   <div class="spacer"></div>
-  <div class="live"><span class="live-dot"></span>LIVE · SSE + poll</div>
+  <div class="live"><span class="live-dot"></span>LIVE</div>
+  <button class="icon-btn" id="theme-toggle" title="Toggle light/dark">☀</button>
 </header>
 
-<!-- KPI row -->
-<div class="kpis">
-  <div class="kpi"><div class="label">Node</div><div class="value" id="node">—</div><div class="sub" id="version">v—</div></div>
-  <div class="kpi"><div class="label">Uptime</div><div class="value" id="uptime">—</div><div class="sub" id="api">/api/status</div></div>
-  <div class="kpi"><div class="label">LB Pools</div><div class="value" id="pools">—</div><div class="sub"><span id="pool-split">—</span></div></div>
-  <div class="kpi"><div class="label">BGP RIB</div><div class="value" id="rib">—</div><div class="sub" id="bgp-state">—</div></div>
+<nav id="main-nav">
+  <button data-view="overview" class="active">Overview</button>
+  <button data-view="topology">Topology</button>
+  <button data-view="mesh">Mesh</button>
+  <button data-view="bgp">BGP</button>
+  <button data-view="lb">Load Balancers</button>
+  <button data-view="actions">Actions</button>
+</nav>
+
+<!-- ============ OVERVIEW ============ -->
+<div class="view active" id="view-overview">
+  <div class="kpis">
+    <div class="kpi"><div class="label">Node</div><div class="value" id="node">—</div><div class="sub" id="version">v—</div></div>
+    <div class="kpi"><div class="label">Uptime</div><div class="value" id="uptime">—</div><div class="sub">since start</div></div>
+    <div class="kpi"><div class="label">LB Pools</div><div class="value" id="pools">—</div><div class="sub" id="pool-split">—</div></div>
+    <div class="kpi"><div class="label">BGP RIB</div><div class="value" id="rib">—</div><div class="sub" id="bgp-state">—</div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>TCP Pools Summary</h3><div id="ov-tcp" style="font-size:13px;color:var(--muted)">—</div></div>
+    <div class="card"><h3>Mesh &amp; BGP</h3><div id="ov-mesh" style="font-size:13px;color:var(--muted)">—</div></div>
+  </div>
 </div>
 
-<!-- Mesh -->
-<section>
-  <h2>WireGuard Mesh</h2>
+<!-- ============ TOPOLOGY ============ -->
+<div class="view" id="view-topology">
+  <div class="topo-toolbar">
+    <span class="lbl">Auto layout:</span>
+    <button class="btn" onclick="topoLayout('vertical')">⬍ Vertical</button>
+    <button class="btn" onclick="topoLayout('horizontal')">⬌ Horizontal</button>
+    <button class="btn" onclick="topoLayout('radial')">◎ Radial</button>
+    <button class="btn" onclick="topoFit()">⤢ Fit view</button>
+    <button class="btn" onclick="topoReset()">↺ Reset</button>
+    <span class="lbl" style="margin-left:auto">drag node · wheel = zoom · drag bg = pan</span>
+  </div>
+  <svg id="topo-svg" xmlns="http://www.w3.org/2000/svg">
+    <g id="topo-root"></g>
+  </svg>
+</div>
+
+<!-- ============ MESH ============ -->
+<div class="view" id="view-mesh">
   <div class="grid2">
     <div class="card">
-      <table style="margin-bottom:8px">
+      <h3>Configuration</h3>
+      <table style="margin-bottom:10px">
         <tr><td>Status</td><td id="mesh-status"></td></tr>
-        <tr><td>Listen port</td><td class="mono" id="mesh-port">—</td></tr>
         <tr><td>Peers configured</td><td class="mono" id="mesh-peers">—</td></tr>
       </table>
-      <button onclick="genKeys()">Generate keypair</button>
+      <button class="btn" onclick="genKeys()">Generate keypair</button>
       <pre class="keys" id="keys"></pre>
     </div>
     <div class="card">
-      <div class="label" style="color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">
-        Live peers (kernel WG)</div>
-      <table id="wg-peers"><thead><tr><th>Public key</th><th>Endpoint</th><th>RX / TX</th><th>Handshake</th></tr></thead>
-      <tbody></tbody></table>
+      <h3>Live peers (kernel WG)</h3>
+      <table id="wg-peers"><thead><tr><th>Public key</th><th>Endpoint</th><th>RX / TX</th><th>Handshake</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
-</section>
+</div>
 
-<!-- BGP -->
-<section>
-  <h2>BGP</h2>
+<!-- ============ BGP ============ -->
+<div class="view" id="view-bgp">
   <div class="grid2">
     <div class="card">
-      <table id="bgp-sessions" style="width:100%">
-        <thead><tr><th>Neighbor</th><th>Remote AS</th><th>State</th><th>Prefixes</th><th>Flaps</th></tr></thead>
-        <tbody></tbody>
+      <h3>Sessions</h3>
+      <table id="bgp-sessions">
+        <thead><tr><th>Neighbor</th><th>Remote AS</th><th>State</th><th>Prefixes</th><th>Flaps</th></tr></thead><tbody></tbody>
       </table>
     </div>
     <div class="card">
-      <div class="kv" style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px">
-        <span style="color:var(--muted)">RIB entries</span><b id="rib-count">0</b>
-      </div>
+      <h3>RIB</h3>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+        <span style="color:var(--muted)">entries</span><b id="rib-count">0</b></div>
       <canvas id="sparkline" height="56"></canvas>
-      <div class="label" style="color:var(--muted);font-size:10px;letter-spacing:1px;margin-top:4px">RIB HISTORY (LIVE)</div>
+      <div style="color:var(--muted);font-size:10px;letter-spacing:1px;margin-top:4px">RIB HISTORY (LIVE)</div>
+      <table id="rib-table" style="margin-top:10px"><thead><tr><th>Prefix</th><th>Neighbor</th><th>AS-path</th><th>Best</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
-</section>
-
-<!-- TCP pools -->
-<section>
-  <h2>TCP Load Balancers</h2>
-  <div class="card" style="padding:8px 12px">
-    <table id="tcp-pools">
-      <thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Health</th><th>Active</th><th>Total</th><th>Pool active</th><th>Rejected</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</section>
-
-<!-- HTTP pools -->
-<section>
-  <h2>HTTP Load Balancers</h2>
-  <div class="card" style="padding:8px 12px">
-    <table id="http-pools">
-      <thead><tr><th>Pool</th><th>Host</th><th>Path prefix</th><th>Backends</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</section>
-
-<footer>sdwanlite v<span id="ver2">—</span> · AGPL-compatible distribution · data refreshes automatically</footer>
 </div>
 
-<script>
-const $ = id => document.getElementById(id);
-const fmtUptime = s => `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`;
-const pill = (ok, tOk, tBad) => `<span class="pill ${ok?'ok':'bad'}">${ok?tOk:tBad}</span>`;
-const esc = s => String(s).replace(/</g,'&lt;');
-const ribHistory = [];
+<!-- ============ LB ============ -->
+<div class="view" id="view-lb">
+  <div class="card"><h3>TCP Pools</h3>
+    <table id="tcp-pools">
+      <thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Health</th><th>Active</th><th>Total</th><th>Pool active</th><th>Rejected</th></tr></thead><tbody></tbody>
+    </table>
+  </div>
+  <div class="card"><h3>HTTP Pools</h3>
+    <table id="http-pools">
+      <thead><tr><th>Pool</th><th>Host</th><th>Path prefix</th><th>Backends</th></tr></thead><tbody></tbody>
+    </table>
+  </div>
+</div>
 
-async function genKeys() {
-  const j = await (await fetch('/api/mesh/keypair')).json();
-  $('keys').style.display = 'block';
-  $('keys').textContent = `private = ${j.private_key}\npublic  = ${j.public_key}`;
-}
+<!-- ============ ACTIONS ============ -->
+<div class="view" id="view-actions">
+  <div class="card">
+    <h3>Quick actions</h3>
+    <div class="actions-bar" id="actions-bar"></div>
+    <h3 style="margin-top:18px">Customize — add a button</h3>
+    <div class="form-row">
+      <div><label>Label</label><input id="act-label" placeholder="Reload config" size="16"></div>
+      <div><label>Method</label>
+        <select id="act-method"><option>GET</option><option>POST</option><option>DELETE</option></select></div>
+      <div><label>API path</label><input id="act-url" placeholder="/api/reload" size="24"></div>
+      <button class="btn" onclick="addAction()">+ Add button</button>
+    </div>
+    <h3 style="margin-top:18px">Existing custom buttons</h3>
+    <div id="act-list"></div>
+  </div>
+</div>
 
-function renderStatus(s) {
-  $('node').textContent = s.node || '—';
-  $('version').textContent = 'v' + s.version;
-  $('ver2').textContent = 'v' + s.version;
-  $('uptime').textContent = fmtUptime(s.uptime_secs);
-  $('mesh-status').innerHTML = pill(s.mesh_enabled, 'enabled', 'disabled');
-  $('mesh-peers').textContent = s.mesh_peers_configured ?? 0;
-  $('bgp-state').innerHTML = pill(s.bgp_enabled, 'enabled', 'disabled');
-  $('rib').textContent = s.bgp_rib_size ?? 0;
+<footer>sdwanlite <span id="ver2">—</span> · data auto-refreshes</footer>
+</div>
 
-  const tb = document.querySelector('#bgp-sessions tbody');
-  tb.innerHTML = (s.bgp_sessions || []).map(x => `
-    <tr><td class="mono">${esc(x.neighbor)}</td>
-        <td>${x.remote_as != null ? 'AS' + x.remote_as : '—'}</td>
-        <td>${pill(x.state === 'established', x.state, x.state)}</td>
-        <td>${x.prefixes_received ?? 0}</td>
-        <td>${x.flaps ?? 0}</td></tr>`).join('')
-    || '<tr><td colspan="5" style="color:var(--muted)">no sessions configured</td></tr>';
-}
-
-async function refresh() {
+async function refreshRib() {
   try {
-    renderStatus(await (await fetch('/api/status')).json());
-
-    const lb = await (await fetch('/api/lb')).json();
-    $('pools').textContent = lb.tcp.length + lb.http.length;
-    $('pool-split').textContent = `${lb.tcp.length} TCP · ${lb.http.length} HTTP`;
-    let totalActive = 0;
-    document.querySelector('#tcp-pools tbody').innerHTML =
-      lb.tcp.flatMap(p => {
-        totalActive += p.active_conns;
-        return p.backends.map(b => `
-          <tr><td>${esc(p.name)}</td><td>${p.algorithm}</td>
-          <td class="mono">${b.addr}</td>
-          <td>${pill(b.healthy,'healthy','down')}</td>
-          <td>${b.active_conns}</td><td>${b.total_conns}</td>
-          <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`);
-      }).join('') || '<tr><td colspan="8" style="color:var(--muted)">no pools</td></tr>';
-
-    document.querySelector('#http-pools tbody').innerHTML =
-      lb.http.flatMap(p => p.routes.map(r => `
-        <tr><td>${esc(p.name)}</td><td>${r.host ? esc(r.host) : '*'}</td>
-        <td class="mono">${esc(r.path_prefix || '/')}</td><td>${r.backends}</td></tr>`)).join('')
-      || '<tr><td colspan="4" style="color:var(--muted)">no pools</td></tr>';
-  } catch (e) { console.error(e); }
-}
-
-async function refreshMesh() {
-  try {
-    const w = await (await fetch('/api/mesh/status')).json();
-    const tb = document.querySelector('#wg-peers tbody');
-    if (!w.available) {
-      tb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">wg tools unavailable on this host — config rendering & keypair APIs still work</td></tr>';
-      return;
-    }
-    tb.innerHTML = (w.peers || []).map(p => `
-      <tr><td class="mono" title="${esc(p.public_key)}">${esc(p.public_key.slice(0,14))}…</td>
-      <td>${esc(p.endpoint || '—')}</td>
-      <td>${p.rx_bytes} / ${p.tx_bytes}</td>
-      <td>${p.latest_handshake_secs_ago != null ? p.latest_handshake_secs_ago + 's ago' : '<span class="pill warn">never</span>'}</td></tr>`).join('')
-      || '<tr><td colspan="4" style="color:var(--muted)">no peers</td></tr>';
+    const j = await (await fetch('/api/bgp/rib')).json();
+    ribData.push(j.count);
+    if (ribData.length > 60) ribData.shift();
+    $('rib-count').textContent = j.count;
+    document.querySelector('#rib-table tbody').innerHTML = (j.routes || []).map(r =>
+      '<tr><td class="mono">' + esc(r.prefix) + '</td><td>' + esc(r.neighbor) + '</td>' +
+      '<td>' + (r.as_path_len != null ? r.as_path_len : '—') + '</td>' +
+      '<td>' + (r.best ? '<span class="pill ok">best</span>' : '') + '</td></tr>').join('')
+      || '<tr><td colspan="4" style="color:var(--muted)">empty</td></tr>';
+    drawSpark();
   } catch {}
 }
-
-// RIB sparkline
 let ribData = [];
 function drawSpark() {
   const cv = document.getElementById('sparkline');
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth, h = 56;
+  const w = cv.clientWidth || 300, h = 56;
   cv.width = w * dpr; cv.height = h * dpr;
   const ctx = cv.getContext('2d');
   ctx.scale(dpr, dpr);
@@ -278,21 +231,64 @@ function drawSpark() {
     const y = h - 6 - (v / max) * (h - 14);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = '#00d2ff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+  ctx.lineWidth = 2; ctx.stroke();
 }
-setInterval(() => {
-  fetch('/api/bgp/rib').then(r => r.json()).then(j => {
-    ribData.push(j.count);
-    if (ribData.length > 60) ribData.shift();
-    $('rib-count').textContent = j.count;
-    drawSpark();
-  }).catch(() => {});
-}, 3000);
 
-refresh(); refreshMesh();
+/* ---------- customizable action buttons ---------- */
+function loadActions() {
+  return JSON.parse(localStorage.getItem('sl-actions') || 'null') || [
+    { label: 'Reload config', method: 'POST', url: '/api/reload' },
+    { label: 'TLS reload', method: 'POST', url: '/api/tls/reload' },
+    { label: 'Generate keypair', method: 'GET', url: '/api/mesh/keypair' }
+  ];
+}
+function saveActions(a) { localStorage.setItem('sl-actions', JSON.stringify(a)); renderActions(); }
+
+function renderActions() {
+  const acts = loadActions();
+  const bar = document.getElementById('actions-bar');
+  bar.innerHTML = acts.map((a, i) =>
+    '<button class="act-btn" onclick="runAction(' + i + ')">' + esc(a.label) + '</button>').join('')
+    || '<span style="color:var(--muted);font-size:13px">no buttons — add one below</span>';
+  const list = document.getElementById('act-list');
+  list.innerHTML = acts.map((a, i) =>
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+    '<span><b>' + esc(a.label) + '</b> <span class="pill info">' + a.method + '</span> <code>' + esc(a.url) + '</code></span>' +
+    '<button class="btn danger" onclick="delAction(' + i + ')">✕</button></div>').join('')
+    || '<span style="color:var(--muted);font-size:13px">none</span>';
+}
+
+async function runAction(i) {
+  const a = loadActions()[i];
+  try {
+    const opt = { method: a.method };
+    if (a.method !== 'GET') opt.headers = { 'Content-Type': 'application/json' };
+    const r = await fetch(a.url, opt);
+    const text = (await r.text()).slice(0, 200);
+    alert(a.label + ' → HTTP ' + r.status + '\n' + text);
+  } catch (e) { alert(a.label + ' failed: ' + e); }
+}
+
+function addAction() {
+  const label = document.getElementById('act-label').value.trim();
+  const method = document.getElementById('act-method').value;
+  const url = document.getElementById('act-url').value.trim();
+  if (!label || !url) { alert('label and URL required'); return; }
+  const acts = loadActions(); acts.push({ label, method, url });
+  saveActions(acts);
+  document.getElementById('act-label').value = '';
+  document.getElementById('act-url').value = '';
+}
+function delAction(i) {
+  const acts = loadActions(); acts.splice(i, 1); saveActions(acts);
+}
+renderActions();
+
+/* ---------- boot ---------- */
+refresh(); refreshLB(); refreshMesh(); refreshRib();
 setInterval(refresh, 3000);
-setInterval(refreshMesh, 5000);
+setInterval(refreshLB, 3000);
+setInterval(refreshMesh, 6000);
+setInterval(refreshRib, 3000);
 window.addEventListener('resize', drawSpark);
-</script>
-</body>
-</html>

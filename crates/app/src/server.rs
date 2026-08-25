@@ -79,7 +79,6 @@ struct LbSummaryView {
 pub fn router(state: Arc<AppState>) -> axum::Router {
     use axum::routing::{get, post};
     axum::Router::new()
-        .route("/", get(dashboard))
         .route("/api/status", get(api_status))
         .route("/api/lb", get(api_lb))
         .route("/api/mesh/keypair", get(api_keypair))
@@ -96,7 +95,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .with_state(state)
 }
 
-async fn dashboard() -> axum::response::Html<&'static str> {
+pub async fn legacy_dashboard() -> impl axum::response::IntoResponse {
     axum::response::Html(include_str!("dashboard.html"))
 }
 

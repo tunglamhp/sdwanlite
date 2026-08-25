@@ -8,6 +8,7 @@ members = [
     "crates/acme",
     "crates/app",
 ]
+exclude = ["crates/web"]
 
 [workspace.package]
 version = "0.1.0"

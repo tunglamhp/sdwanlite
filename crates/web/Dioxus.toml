@@ -1,0 +1,6 @@
+[application]
+name = "sdwanlite-web"
+default_platform = "web"
+
+[web.watcher]
+watch_dirs = ["src"]
