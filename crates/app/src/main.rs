@@ -108,7 +108,9 @@ async fn main() -> Result<()> {
             .fallback(axum::routing::get(server::legacy_dashboard))
     };
 
-    let app = server::router(Arc::clone(&state)).fallback_service(ui);
+    let app = server::router(Arc::clone(&state))
+        .layer(axum::middleware::from_fn(server::auth_middleware))
+        .fallback_service(ui);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("api + dashboard listening on http://{addr}");

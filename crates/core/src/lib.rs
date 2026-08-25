@@ -139,7 +139,7 @@ impl Default for General {
 }
 
 fn default_api_addr() -> String {
-    "0.0.0.0".into()
+    "127.0.0.1".into()
 }
 fn default_api_port() -> u16 {
     8080

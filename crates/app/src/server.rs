@@ -77,6 +77,42 @@ struct LbSummaryView {
     http_pools: usize,
 }
 
+use axum::middleware;
+
+/// HTTP Basic Auth middleware — reads credentials from env vars.
+/// If SDWANLITE_AUTH_USER + SDWANLITE_AUTH_PASS are set, ALL routes require auth.
+/// If not set, access is open (dev mode) but a warning is logged at startup.
+pub async fn auth_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let user = std::env::var("SDWANLITE_AUTH_USER").unwrap_or_default();
+    let pass = std::env::var("SDWANLITE_AUTH_PASS").unwrap_or_default();
+
+    // Skip auth in dev mode (no credentials configured)
+    if user.is_empty() || pass.is_empty() {
+        return next.run(req).await;
+    }
+
+    let expected = format!("Basic {}", {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass))
+    });
+
+    match req.headers().get(axum::http::header::AUTHORIZATION) {
+        Some(v) if v.to_str().unwrap_or("") == expected => next.run(req).await,
+        _ => {
+            let mut rsp = axum::response::Response::new(axum::body::Body::from("Unauthorized"));
+            *rsp.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+            rsp.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                axum::http::HeaderValue::from_static("Basic realm=\"sdwanlite\""),
+            );
+            rsp
+        }
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> axum::Router {
     use axum::routing::{get, post};
     axum::Router::new()
