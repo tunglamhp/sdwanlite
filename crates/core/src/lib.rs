@@ -282,6 +282,8 @@ pub enum Algorithm {
     RoundRobin,
     LeastConnections,
     Random,
+    /// Always use first healthy backend; switch only when it goes down.
+    Failover,
 }
 
 impl Algorithm {
@@ -290,6 +292,7 @@ impl Algorithm {
             Algorithm::RoundRobin => "round_robin",
             Algorithm::LeastConnections => "least_connections",
             Algorithm::Random => "random",
+            Algorithm::Failover => "failover",
         }
     }
 }

@@ -176,6 +176,8 @@ pub(crate) fn select_backend<'a>(
             let i = rand::thread_rng().gen_range(0..healthy.len());
             Some(healthy[i])
         }
+        // Failover: always prefer the first backend in the list that is healthy
+        Algorithm::Failover => healthy.first().copied(),
     }
 }
 
