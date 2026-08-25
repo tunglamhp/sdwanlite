@@ -258,46 +258,69 @@ fn app() -> Element {
     });
 
     rsx! {
-        div { class: "wrap",
-            header {
-                div { class: "logo", "SL" }
-                h1 { "SDWANLite" small { "CONTROL PANEL" } }
-                div { class: "spacer" }
-                div { class: "live", span { class: "live-dot" } "LIVE" }
-                button {
-                    class: "icon-btn",
-                    title: "Toggle light/dark",
-                    onclick: move |_| {
-                        let next = if theme() == "dark" { "light" } else { "dark" };
-                        theme.set(next.to_string());
-                        ls_set("sl-theme", &next);
-                        apply_theme(&next);
-                    },
-                    {if theme() == "dark" { "☀" } else { "🌙" }}
+        div { class: "layout",
+            // ---- Sidebar ----
+            div { class: "sidebar",
+                div { class: "sidebar-header",
+                    div { class: "sidebar-logo", "SL" }
+                    div { b { "SDWANLite" } small { "CONTROL PANEL" } }
                 }
-            }
-            nav {
-                for (id, label) in [
-                    ("overview", "Overview"), ("topology", "Topology"), ("mesh", "Mesh"),
-                    ("bgp", "BGP"), ("lb", "Load Balancers"), ("actions", "Actions"),
-                ] {
+                div { class: "sidebar-nav",
+                    for (id, icon, label) in [
+                        ("overview", "◉", "Overview"),
+                        ("topology", "⬡", "Topology"),
+                        ("mesh", "🔒", "Mesh"),
+                        ("bgp", "🌐", "BGP"),
+                        ("lb", "⚖", "Load Balancers"),
+                        ("actions", "⚡", "Actions"),
+                    ] {
+                        button {
+                            key: "{id}",
+                            class: if tab() == id { "active" } else { "" },
+                            onclick: move |_| tab.set(id.to_string()),
+                            span { class: "icon", "{icon}" }
+                            "{label}"
+                        }
+                    }
+                }
+                div { class: "sidebar-footer",
+                    div { class: "live", span { class: "live-dot" } "LIVE" }
                     button {
-                        key: "{id}",
-                        class: if tab() == id { "active" } else { "" },
-                        onclick: move |_| tab.set(id.to_string()),
-                        "{label}"
+                        class: "icon-btn",
+                        title: "Toggle light/dark",
+                        onclick: move |_| {
+                            let next = if theme() == "dark" { "light" } else { "dark" };
+                            theme.set(next.to_string());
+                            ls_set("sl-theme", &next);
+                            apply_theme(&next);
+                        },
+                        {if theme() == "dark" { "☀" } else { "🌙" }}
                     }
                 }
             }
-            {match tab().as_str() {
-                "topology" => rsx! { TopologyView { lb } },
-                "mesh" => rsx! { MeshView { status, mesh } },
-                "bgp" => rsx! { BgpView { status, rib, rib_hist } },
-                "lb" => rsx! { LbView { lb } },
-                "actions" => rsx! { ActionsView {} },
-                _ => rsx! { Overview { status } },
-            }}
-            footer { "sdwanlite · data auto-refreshes · built with Dioxus" }
+            // ---- Main content ----
+            div { class: "main",
+                div { class: "main-header",
+                    h2 { {match tab().as_str() {
+                        "topology" => "Network Topology",
+                        "mesh" => "WireGuard Mesh",
+                        "bgp" => "BGP",
+                        "lb" => "Load Balancers",
+                        "actions" => "Quick Actions",
+                        _ => "Dashboard Overview",
+                    }} }
+                    div { class: "spacer" }
+                }
+                {match tab().as_str() {
+                    "topology" => rsx! { TopologyView { lb } },
+                    "mesh" => rsx! { MeshView { status, mesh } },
+                    "bgp" => rsx! { BgpView { status, rib, rib_hist } },
+                    "lb" => rsx! { LbView { lb } },
+                    "actions" => rsx! { ActionsView {} },
+                    _ => rsx! { Overview { status } },
+                }}
+                footer { "sdwanlite · data auto-refreshes · built with Dioxus" }
+            }
         }
     }
 }

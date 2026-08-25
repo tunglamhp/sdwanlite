@@ -22,6 +22,10 @@ pub struct Config {
     #[serde(default)]
     pub acme: Acme,
     #[serde(default)]
+    pub firewall: Vec<FirewallRule>,
+    #[serde(default)]
+    pub qos: QosLimit,
+    #[serde(default)]
     pub lb: LoadBalancers,
 }
 
@@ -80,6 +84,38 @@ fn default_http01_port() -> u16 {
 }
 fn default_renew_days() -> u32 {
     30
+}
+
+/// Firewall rule: allow or deny traffic matching port/protocol.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FirewallRule {
+    pub action: String, // "allow" | "deny"
+    pub port: u16,
+    pub protocol: String, // "tcp" | "udp" | "any"
+    #[serde(default)]
+    pub source: Option<String>, // CIDR or IP
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// QoS bandwidth limit per pool.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct QosLimit {
+    /// Max connections per pool (0 = unlimited).
+    #[serde(default)]
+    pub max_conns: u32,
+    /// Max bytes/s per pool (0 = unlimited).
+    #[serde(default)]
+    pub max_bps: u64,
+}
+
+/// Alert event.
+#[derive(Clone, Debug, Serialize)]
+pub struct AlertEvent {
+    pub timestamp: u64,
+    pub severity: String, // "info" | "warn" | "critical"
+    pub source: String,
+    pub message: String,
 }
 
 /// Upstream protocol for HTTP pools.
@@ -235,6 +271,8 @@ pub struct TcpPool {
     /// instead of a bare TCP connect.
     #[serde(default)]
     pub health_check_path: Option<String>,
+    #[serde(default)]
+    pub qos: Option<QosLimit>,
     pub backends: Vec<String>,
 }
 
@@ -319,6 +357,7 @@ impl Config {
             listen: "127.0.0.1:9000".into(),
             algorithm: Algorithm::LeastConnections,
             health_check_path: None,
+            qos: None,
             health_interval_secs: 5,
             health_timeout_secs: 2,
             backends: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into()],
