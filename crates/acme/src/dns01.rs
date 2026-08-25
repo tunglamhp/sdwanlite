@@ -31,6 +31,7 @@ pub fn zone_apex(domain: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 const CF_API: &str = "https://api.cloudflare.com/client/v4";
 
 fn client(token: &str) -> Result<reqwest::Client, AcmeError> {
