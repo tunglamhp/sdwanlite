@@ -49,9 +49,9 @@ impl Peer {
     }
 
     /// Send one handshake initiation (or retry).
-    async fn kick(&mut self) -> std::io::Result<()> {
+    pub(crate) async fn kick(&mut self) -> std::io::Result<()> {
         let mut dst = vec![0u8; 148];
-        match self.tunn.format_handshake_initiation(&mut dst, true) {
+        match self.tunn.format_handshake_initiation(&mut dst, false) {
             boringtun::noise::TunnResult::WriteToNetwork(packet) => {
                 self.sock.send_to(packet, self.endpoint).await?;
             }

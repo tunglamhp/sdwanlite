@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+vpn-forwarding = []
+
 [dependencies]
 sdwanlite-core = { path = "../core" }
 x25519-dalek = { workspace = true }
@@ -12,6 +15,8 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
 tracing = { workspace = true }
+parking_lot = "0.12"
+smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"] }
 boringtun = { version = "0.7", default-features = false }
 
 [dev-dependencies]

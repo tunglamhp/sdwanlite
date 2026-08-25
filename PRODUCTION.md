@@ -49,6 +49,17 @@ docker compose --profile monitoring up -d
   dashboard: backend health/connections/bytes, pool rejections, BGP RIB +
   established sessions, uptime.
 
+## 5. Portable userspace mesh (experimental)
+
+The `vpn-forwarding` feature (off by default) contains a working boringtun
+WireGuard handshake between two in-process peers — no kernel WG or `wg`
+tools needed. TCP forwarding over the tunnel is under active development;
+enable with:
+
+```bash
+cargo test -p sdwanlite-mesh --features vpn-forwarding
+```
+
 ## Hardening checklist
 
 - Set `general.api_token` before exposing the API beyond loopback.

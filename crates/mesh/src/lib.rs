@@ -13,6 +13,8 @@ use std::fmt;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 pub mod boringtun_peer;
+#[cfg(feature = "vpn-forwarding")]
+pub mod vpn;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MeshError {
@@ -431,5 +433,123 @@ mod boringtun_tests {
         .expect("handshake success");
 
         assert!(elapsed < std::time::Duration::from_secs(15));
+    }
+}
+
+#[cfg(all(test, feature = "vpn-forwarding"))]
+mod vpn_tests {
+    use crate::vpn::VpnNode;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn tcp_echo_roundtrip_through_wg_tunnel() {
+        // ---- plain echo service reachable only from node B ----
+        let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_addr = echo.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = echo.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    loop {
+                        match s.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                s.write_all(&buf[..n]).await.ok();
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let kp_a = super::generate_keypair();
+        let kp_b = super::generate_keypair();
+
+        // node B first so we can learn its UDP port for A's peer endpoint
+        let mut b = VpnNode::new(
+            [10, 7, 0, 2],
+            &kp_b.private_b64,
+            &kp_a.public_b64,
+            0,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        b.set_passive();
+        let mut a = VpnNode::new(
+            [10, 7, 0, 1],
+            &kp_a.private_b64,
+            &kp_b.public_b64,
+            0,
+            format!("127.0.0.1:{}", b.local_udp_port()).parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        a.set_peer(format!("127.0.0.1:{}", b.local_udp_port()).parse().unwrap());
+
+        // B forwards virtual :8000 -> echo service
+        b.serve_forward(8000);
+
+        // A dials B's virtual service
+        let h = a.tcp_open(smoltcp::wire::Ipv4Address::from([10, 7, 0, 2]), 8000).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let payload = b"hello-over-wg";
+        let mut sent = false;
+        let mut received: Vec<u8> = Vec::new();
+        let mut echo_stream: Option<tokio::net::TcpStream> = None;
+        let mut echo_buf = [0u8; 512];
+
+        while Instant::now() < deadline && received.is_empty() {
+            a.poll();
+            b.poll();
+
+            // A: wait established, then send payload once
+            if !sent && a.tcp_state(h) == "established" {
+                let n = a.tcp_try_write(h, payload);
+                if n == Some(payload.len()) {
+                    sent = true;
+                }
+            }
+
+            // B: detect accepted connection, dial echo backend
+            if echo_stream.is_none() && b.listener_established() {
+                echo_stream = Some(tokio::net::TcpStream::connect(echo_addr).await.unwrap());
+            }
+            if let Some(es) = echo_stream.as_mut() {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // virtual -> echo
+                if let Some(n) = b.tcp_try_read_listener(&mut echo_buf) {
+                    if n > 0 {
+                        es.write_all(&echo_buf[..n]).await.ok();
+                    }
+                }
+                // echo -> virtual
+                if let Ok(n) = es.try_read(&mut echo_buf) {
+                    if n > 0 {
+                        let _ = b.tcp_try_write_listener(echo_buf[..n].to_vec());
+                    }
+                }
+            }
+
+            // A: collect response
+            if sent {
+                let mut tmp = [0u8; 256];
+                if let Some(n) = a.tcp_try_read(h, &mut tmp) {
+                    received.extend_from_slice(&tmp[..n]);
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        eprintln!("final: a_state={}", a.tcp_state(h));
+        eprintln!("final: b_listener={}", b.listener_state());
+
+        assert_eq!(
+            String::from_utf8_lossy(&received),
+            String::from_utf8_lossy(payload)
+        );
     }
 }
