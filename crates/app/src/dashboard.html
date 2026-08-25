@@ -6,191 +6,293 @@
 <title>sdwanlite — control panel</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e;
-    --accent: #58a6ff; --green: #3fb950; --red: #f85149; --amber: #d29922;
+    --bg: #0b0f14; --panel: #12181f; --panel2: #171e27; --border: #232b36;
+    --text: #e6edf3; --muted: #8b98a5;
+    --accent: #00d2ff; --accent2: #3a7bd5;
+    --green: #34d399; --red: #f87171; --amber: #fbbf24;
+    --radius: 14px;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
-    background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", system-ui, sans-serif;
-    padding: 24px; max-width: 1100px; margin: auto;
+    background:
+      radial-gradient(1200px 500px at 80% -10%, rgba(58,123,213,.12), transparent),
+      radial-gradient(900px 400px at -10% 110%, rgba(0,210,255,.07), transparent),
+      var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    min-height: 100vh; padding: 28px clamp(16px, 4vw, 48px);
   }
-  header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
-  header .logo {
-    width: 44px; height: 44px; border-radius: 12px;
+  .wrap { max-width: 1200px; margin: auto; }
+
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+  .logo {
+    width: 52px; height: 52px; border-radius: 14px; flex: none;
     background: linear-gradient(135deg, #0f2027, #2c5364);
-    display: flex; align-items: center; justify-content: center;
-    color: #00d2ff; font-weight: 800; font-size: 18px;
-    border: 1px solid var(--border);
+    border: 1px solid #2c5364aa;
+    display: grid; place-items: center;
+    color: #00d2ff; font-weight: 800; font-size: 20px;
+    box-shadow: 0 0 24px rgba(0,210,255,.15);
   }
-  h1 { font-size: 20px; font-weight: 600; letter-spacing: .5px; }
-  h1 span { color: var(--accent); letter-spacing: 6px; font-size: 12px; display: block; font-weight: 500;}
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
+  h1 small { display: block; color: var(--muted); font-size: 11px; letter-spacing: 3px; font-weight: 600; margin-top: 2px; }
+  .spacer { flex: 1; }
+  .live { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.5)} 50%{box-shadow:0 0 0 6px rgba(52,211,153,0)} }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; margin-bottom: 22px; }
+  .kpi {
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px; position: relative; overflow: hidden;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .kpi:hover { transform: translateY(-2px); border-color: #3a7bd566; }
+  .kpi::before { content:""; position:absolute; inset:0 0 auto 0; height:2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity:.5; }
+  .kpi .label { font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+  .kpi .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  section { margin-bottom: 26px; }
+  section > h2 {
+    font-size: 13px; letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 10px 2px; display:flex; align-items:center; gap:8px;
+  }
+  section > h2::before { content:""; width: 3px; height: 14px; border-radius: 2px; background: var(--accent); }
+
   .card {
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px;
+    border-radius: var(--radius); padding: 18px;
   }
-  .card h2 {
-    font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px;
-    color: var(--muted); margin-bottom: 12px; display:flex; justify-content: space-between; align-items:center;
-  }
-  .kv { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
-  .kv b { font-weight: 600; }
-  .kv span { color: var(--muted); }
-  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
-  .ok   { background: rgba(63,185,80,.15);  color: var(--green); }
-  .bad  { background: rgba(248,81,73,.15);  color: var(--red); }
-  .warn { background: rgba(210,153,34,.15); color: var(--amber); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
-  td { padding: 5px 6px; border-bottom: 1px solid #21262d; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-  footer { margin-top: 20px; color: var(--muted); font-size: 12px; text-align: center; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align:left; color:var(--muted); font-weight:600; font-size:11px; letter-spacing:1px;
+       text-transform:uppercase; padding:6px 8px; border-bottom:1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid #1a222d; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background:#182130; }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; color:#9ecbff; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
+          font-size:11.5px; font-weight:600; }
+  .pill.ok   { background:rgba(52,211,153,.12); color:var(--green); }
+  .pill.bad  { background:rgba(248,113,113,.12); color:var(--red); }
+  .pill.warn { background:rgba(251,191,36,.12);  color:var(--amber); }
+  .pill.info { background:rgba(88,166,255,.12);  color:var(--accent); }
+  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+  .dot.g{background:var(--green)} .dot.r{background:var(--red)}
+
+  button { background:#1c2634; color:var(--accent); border:1px solid #2a3a4d;
+           border-radius:8px; padding:6px 14px; cursor:pointer; font-size:12.5px; font-weight:600;
+           transition: background .15s; }
+  button:hover { background:#243044; }
+  pre.keys { background:#0d1319; border:1px solid var(--border); border-radius:8px;
+             padding:10px 12px; font-size:12px; color:#9ecbff; white-space:pre-wrap;
+             font-family:Consolas,monospace; margin-top:10px; display:none; }
+  canvas#sparkline { width:100%; height:56px; display:block; margin-top:8px; }
+  footer { text-align:center; color:var(--muted); font-size:12px; margin-top:30px; }
+  .fade { animation: fadein .35s ease; }
+  @keyframes fadein { from{opacity:0; transform:translateY(4px)} to{opacity:1} }
 </style>
 </head>
 <body>
+<div class="wrap">
+
 <header>
   <div class="logo">SL</div>
-  <h1>SDWANLite<span>CONTROL PANEL</span></h1>
+  <h1>SDWANLite<small>CONTROL PANEL</small></h1>
+  <div class="spacer"></div>
+  <div class="live"><span class="live-dot"></span>LIVE · SSE + poll</div>
 </header>
 
-<div class="grid">
-  <div class="card">
-    <h2>Node <span id="uptime" class="badge ok">up</span></h2>
-    <div class="kv"><span>Name</span><b id="node">—</b></div>
-    <div class="kv"><span>Version</span><b id="version">—</b></div>
-    <div class="kv"><span>Uptime</span><b id="uptime-val">—</b></div>
-  </div>
-
-  <div class="card">
-    <h2>Mesh (WireGuard)</h2>
-    <div class="kv"><span>Status</span><b id="mesh-state">—</b></div>
-    <div class="kv"><span>Peers configured</span><b id="mesh-peers">—</b></div>
-    <div class="kv"><span style="font-size:12px">Keypair</span><button onclick="genKeys()" style="background:#21262d;color:#58a6ff;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer">Generate</button></div>
-    <pre id="keys" style="margin-top:8px;font-size:12px;color:var(--muted);white-space:pre-wrap"></pre>
-    <table id="wg-peers"><thead><tr><th>Peer (key)</th><th>RX/TX</th><th>Last handshake</th></tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>BGP</h2>
-    <div class="kv"><span>Status</span><b id="bgp-state">—</b></div>
-    <div class="kv"><span>RIB entries</span><b id="rib-count">0</b></div>
-    <table id="bgp-sessions"><thead><tr><th>Neighbor</th><th>State</th></tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card" style="grid-column: 1 / -1;">
-    <h2>Load balancers — TCP pools</h2>
-    <table id="tcp-pools"><thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Healthy</th><th>Active</th><th>Total</th><th>Pool active</th><th>Rejected</th></tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card" style="grid-column: 1 / -1;">
-    <h2>Load balancers — HTTP pools</h2>
-    <table id="http-pools"><thead><tr><th>Pool</th><th>Host</th><th>Path prefix</th><th>Backends</th></tr></thead><tbody></tbody></table>
-  </div>
+<!-- KPI row -->
+<div class="kpis">
+  <div class="kpi"><div class="label">Node</div><div class="value" id="node">—</div><div class="sub" id="version">v—</div></div>
+  <div class="kpi"><div class="label">Uptime</div><div class="value" id="uptime">—</div><div class="sub" id="api">/api/status</div></div>
+  <div class="kpi"><div class="label">LB Pools</div><div class="value" id="pools">—</div><div class="sub"><span id="pool-split">—</span></div></div>
+  <div class="kpi"><div class="label">BGP RIB</div><div class="value" id="rib">—</div><div class="sub" id="bgp-state">—</div></div>
 </div>
 
-<footer>sdwanlite • polling /api every 3s</footer>
+<!-- Mesh -->
+<section>
+  <h2>WireGuard Mesh</h2>
+  <div class="grid2">
+    <div class="card">
+      <table style="margin-bottom:8px">
+        <tr><td>Status</td><td id="mesh-status"></td></tr>
+        <tr><td>Listen port</td><td class="mono" id="mesh-port">—</td></tr>
+        <tr><td>Peers configured</td><td class="mono" id="mesh-peers">—</td></tr>
+      </table>
+      <button onclick="genKeys()">Generate keypair</button>
+      <pre class="keys" id="keys"></pre>
+    </div>
+    <div class="card">
+      <div class="label" style="color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">
+        Live peers (kernel WG)</div>
+      <table id="wg-peers"><thead><tr><th>Public key</th><th>Endpoint</th><th>RX / TX</th><th>Handshake</th></tr></thead>
+      <tbody></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- BGP -->
+<section>
+  <h2>BGP</h2>
+  <div class="grid2">
+    <div class="card">
+      <table id="bgp-sessions" style="width:100%">
+        <thead><tr><th>Neighbor</th><th>Remote AS</th><th>State</th><th>Prefixes</th><th>Flaps</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <div class="kv" style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px">
+        <span style="color:var(--muted)">RIB entries</span><b id="rib-count">0</b>
+      </div>
+      <canvas id="sparkline" height="56"></canvas>
+      <div class="label" style="color:var(--muted);font-size:10px;letter-spacing:1px;margin-top:4px">RIB HISTORY (LIVE)</div>
+    </div>
+  </div>
+</section>
+
+<!-- TCP pools -->
+<section>
+  <h2>TCP Load Balancers</h2>
+  <div class="card" style="padding:8px 12px">
+    <table id="tcp-pools">
+      <thead><tr><th>Pool</th><th>Algorithm</th><th>Backend</th><th>Health</th><th>Active</th><th>Total</th><th>Pool active</th><th>Rejected</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- HTTP pools -->
+<section>
+  <h2>HTTP Load Balancers</h2>
+  <div class="card" style="padding:8px 12px">
+    <table id="http-pools">
+      <thead><tr><th>Pool</th><th>Host</th><th>Path prefix</th><th>Backends</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<footer>sdwanlite v<span id="ver2">—</span> · AGPL-compatible distribution · data refreshes automatically</footer>
+</div>
 
 <script>
+const $ = id => document.getElementById(id);
 const fmtUptime = s => `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`;
-const badge = (ok, tOk, tBad) => `<span class="badge ${ok?'ok':'bad'}">${ok?tOk:tBad}</span>`;
+const pill = (ok, tOk, tBad) => `<span class="pill ${ok?'ok':'bad'}">${ok?tOk:tBad}</span>`;
+const esc = s => String(s).replace(/</g,'&lt;');
+const ribHistory = [];
 
 async function genKeys() {
-  const r = await fetch('/api/mesh/keypair'); const j = await r.json();
-  document.getElementById('keys').textContent =
-    `private = ${j.private_key}\npublic  = ${j.public_key}`;
+  const j = await (await fetch('/api/mesh/keypair')).json();
+  $('keys').style.display = 'block';
+  $('keys').textContent = `private = ${j.private_key}\npublic  = ${j.public_key}`;
+}
+
+function renderStatus(s) {
+  $('node').textContent = s.node || '—';
+  $('version').textContent = 'v' + s.version;
+  $('ver2').textContent = 'v' + s.version;
+  $('uptime').textContent = fmtUptime(s.uptime_secs);
+  $('mesh-status').innerHTML = pill(s.mesh_enabled, 'enabled', 'disabled');
+  $('mesh-peers').textContent = s.mesh_peers_configured ?? 0;
+  $('bgp-state').innerHTML = pill(s.bgp_enabled, 'enabled', 'disabled');
+  $('rib').textContent = s.bgp_rib_size ?? 0;
+
+  const tb = document.querySelector('#bgp-sessions tbody');
+  tb.innerHTML = (s.bgp_sessions || []).map(x => `
+    <tr><td class="mono">${esc(x.neighbor)}</td>
+        <td>${x.remote_as != null ? 'AS' + x.remote_as : '—'}</td>
+        <td>${pill(x.state === 'established', x.state, x.state)}</td>
+        <td>${x.prefixes_received ?? 0}</td>
+        <td>${x.flaps ?? 0}</td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--muted)">no sessions configured</td></tr>';
 }
 
 async function refresh() {
   try {
-    const s = await (await fetch('/api/status')).json();
-    document.getElementById('node').textContent = s.node;
-    document.getElementById('version').textContent = 'v' + s.version;
-    document.getElementById('uptime-val').textContent = fmtUptime(s.uptime_secs);
-
-    const meshEl = document.getElementById('mesh-state');
-    meshEl.innerHTML = badge(s.mesh_enabled, 'enabled', 'disabled');
-    document.getElementById('mesh-peers').textContent = s.mesh_peers_configured;
-
-    const bgpEl = document.getElementById('bgp-state');
-    bgpEl.innerHTML = badge(s.bgp_enabled, 'enabled', 'disabled');
-    document.getElementById('rib-count').textContent = s.bgp_rib_size;
-    const tbody = document.querySelector('#bgp-sessions tbody');
-    tbody.innerHTML = (s.bgp_sessions || []).map(x =>
-      `<tr><td>${x.neighbor} ${x.remote_as?`(AS${x.remote_as})`:''}</td>
-       <td>${badge(x.state==='established', x.state+' · '+x.prefixes_received+' pf', x.state)}</td></tr>`).join('')
-      || '<tr><td colspan=2 style="color:var(--muted)">no sessions</td></tr>';
+    renderStatus(await (await fetch('/api/status')).json());
 
     const lb = await (await fetch('/api/lb')).json();
+    $('pools').textContent = lb.tcp.length + lb.http.length;
+    $('pool-split').textContent = `${lb.tcp.length} TCP · ${lb.http.length} HTTP`;
+    let totalActive = 0;
     document.querySelector('#tcp-pools tbody').innerHTML =
-      lb.tcp.flatMap(p => p.backends.map(b => `
-        <tr><td>${p.name}</td><td>${p.algorithm}</td><td>${b.addr}</td>
-        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td>
-        <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`)).join('')
-      || '<tr><td colspan=6 style="color:var(--muted)">no pools</td></tr>';
+      lb.tcp.flatMap(p => {
+        totalActive += p.active_conns;
+        return p.backends.map(b => `
+          <tr><td>${esc(p.name)}</td><td>${p.algorithm}</td>
+          <td class="mono">${b.addr}</td>
+          <td>${pill(b.healthy,'healthy','down')}</td>
+          <td>${b.active_conns}</td><td>${b.total_conns}</td>
+          <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`);
+      }).join('') || '<tr><td colspan="8" style="color:var(--muted)">no pools</td></tr>';
+
     document.querySelector('#http-pools tbody').innerHTML =
       lb.http.flatMap(p => p.routes.map(r => `
-        <tr><td>${p.name}</td><td>${r.host||'*'}</td><td>${r.path_prefix||'/'}</td><td>${r.backends}</td></tr>`)).join('')
-      || '<tr><td colspan=4 style="color:var(--muted)">no pools</td></tr>';
+        <tr><td>${esc(p.name)}</td><td>${r.host ? esc(r.host) : '*'}</td>
+        <td class="mono">${esc(r.path_prefix || '/')}</td><td>${r.backends}</td></tr>`)).join('')
+      || '<tr><td colspan="4" style="color:var(--muted)">no pools</td></tr>';
   } catch (e) { console.error(e); }
 }
-async function refreshWg() {
+
+async function refreshMesh() {
   try {
     const w = await (await fetch('/api/mesh/status')).json();
     const tb = document.querySelector('#wg-peers tbody');
-    tb.innerHTML = !w.available ? '<tr><td colspan=3 style="color:var(--muted)">wg tools unavailable on this host</td></tr>'
-      : (w.peers || []).map(p => `<tr>
-          <td title="${p.public_key}">${p.public_key.slice(0,12)}…<br>${p.endpoint||'—'}</td>
-          <td>${p.rx_bytes}/${p.tx_bytes}</td>
-          <td>${p.latest_handshake_secs_ago!=null ? p.latest_handshake_secs_ago+'s ago' : badge(false,'never','never')}</td></tr>`).join('')
-        || '<tr><td colspan=3 style="color:var(--muted)">no peers configured</td></tr>';
+    if (!w.available) {
+      tb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">wg tools unavailable on this host — config rendering & keypair APIs still work</td></tr>';
+      return;
+    }
+    tb.innerHTML = (w.peers || []).map(p => `
+      <tr><td class="mono" title="${esc(p.public_key)}">${esc(p.public_key.slice(0,14))}…</td>
+      <td>${esc(p.endpoint || '—')}</td>
+      <td>${p.rx_bytes} / ${p.tx_bytes}</td>
+      <td>${p.latest_handshake_secs_ago != null ? p.latest_handshake_secs_ago + 's ago' : '<span class="pill warn">never</span>'}</td></tr>`).join('')
+      || '<tr><td colspan="4" style="color:var(--muted)">no peers</td></tr>';
   } catch {}
 }
-function listenEvents() {
-  const es = new EventSource('/api/events');
-  es.onmessage = (e) => {
-    try { window.__lastEvent = JSON.parse(e.data); } catch {}
-  };
+
+// RIB sparkline
+let ribData = [];
+function drawSpark() {
+  const cv = document.getElementById('sparkline');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = 56;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (ribData.length < 2) return;
+  const max = Math.max(...ribData, 1);
+  ctx.beginPath();
+  ribData.forEach((v, i) => {
+    const x = (i / (ribData.length - 1)) * (w - 4) + 2;
+    const y = h - 6 - (v / max) * (h - 14);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#00d2ff'; ctx.lineWidth = 2; ctx.stroke();
 }
+setInterval(() => {
+  fetch('/api/bgp/rib').then(r => r.json()).then(j => {
+    ribData.push(j.count);
+    if (ribData.length > 60) ribData.shift();
+    $('rib-count').textContent = j.count;
+    drawSpark();
+  }).catch(() => {});
+}, 3000);
 
-async function refresh() {
-  try {
-    const s = await (await fetch('/api/status')).json();
-    document.getElementById('node').textContent = s.node;
-    document.getElementById('version').textContent = 'v' + s.version;
-    document.getElementById('uptime-val').textContent = fmtUptime(s.uptime_secs);
-
-    const meshEl = document.getElementById('mesh-state');
-    meshEl.innerHTML = badge(s.mesh_enabled, 'enabled', 'disabled');
-    document.getElementById('mesh-peers').textContent = s.mesh_peers_configured;
-
-    const bgpEl = document.getElementById('bgp-state');
-    bgpEl.innerHTML = badge(s.bgp_enabled, 'enabled', 'disabled');
-    document.getElementById('rib-count').textContent = s.bgp_rib_size;
-    const tbody = document.querySelector('#bgp-sessions tbody');
-    tbody.innerHTML = (s.bgp_sessions || []).map(x =>
-      `<tr><td>${x.neighbor} ${x.remote_as?`(AS${x.remote_as})`:''}</td>
-       <td>${badge(x.state==='established', x.state + ' / ' + x.prefixes_received + ' pf', x.state)}</td></tr>`).join('')
-      || '<tr><td colspan=2 style="color:var(--muted)">no sessions</td></tr>';
-
-    const lb = await (await fetch('/api/lb')).json();
-    document.querySelector('#tcp-pools tbody').innerHTML =
-      lb.tcp.flatMap(p => p.backends.map(b => `
-        <tr><td>${p.name}</td><td>${p.algorithm}</td><td>${b.addr}</td>
-        <td>${badge(b.healthy,'healthy','down')}</td><td>${b.active_conns}</td><td>${b.total_conns}</td>
-        <td>${p.active_conns}</td><td>${p.rejected_conns}</td></tr>`)).join('')
-      || '<tr><td colspan=8 style="color:var(--muted)">no pools</td></tr>';
-    document.querySelector('#http-pools tbody').innerHTML =
-      lb.http.flatMap(p => p.routes.map(r => `
-        <tr><td>${p.name}</td><td>${r.host||'*'}</td><td>${r.path_prefix||'/'}</td><td>${r.backends}</td></tr>`)).join('')
-      || '<tr><td colspan=4 style="color:var(--muted)">no pools</td></tr>';
-  } catch (e) { console.error(e); }
-}
-listenEvents();
-refresh();
-refreshWg(); setInterval(refreshWg, 10000);
+refresh(); refreshMesh();
 setInterval(refresh, 3000);
+setInterval(refreshMesh, 5000);
+window.addEventListener('resize', drawSpark);
 </script>
 </body>
 </html>
