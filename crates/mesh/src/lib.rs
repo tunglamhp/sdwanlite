@@ -12,6 +12,8 @@ use sdwanlite_core::Config;
 use std::fmt;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+pub mod boringtun_peer;
+
 #[derive(Debug, thiserror::Error)]
 pub enum MeshError {
     #[error("invalid base64 key material")]
@@ -406,5 +408,28 @@ mod tests {
         assert_eq!(peers[0].rx_bytes, 1000);
         assert!(peers[0].latest_handshake_secs_ago.is_some());
         assert!(peers[1].latest_handshake_secs_ago.is_none());
+    }
+}
+
+#[cfg(test)]
+mod boringtun_tests {
+    #[tokio::test]
+    async fn full_wg_handshake_between_two_inprocess_peers() {
+        use crate::boringtun_peer::handshake_smoke;
+
+        // derive a keypair via the existing native generator
+        let kp_a = super::generate_keypair();
+        let kp_b = super::generate_keypair();
+
+        // cross-wire public keys and run the Noise-IK handshake over loopback
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            handshake_smoke(&kp_a.private_b64, &kp_b.public_b64, &kp_b.private_b64, &kp_a.public_b64),
+        )
+        .await
+        .expect("handshake within timeout")
+        .expect("handshake success");
+
+        assert!(elapsed < std::time::Duration::from_secs(15));
     }
 }

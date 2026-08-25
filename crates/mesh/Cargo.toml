@@ -12,3 +12,7 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
 tracing = { workspace = true }
+boringtun = { version = "0.7", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true }
