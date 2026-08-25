@@ -21,3 +21,4 @@ http = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["ring", "http1", "http2", "native-tokio", "tls12"] }
 http-body-util = "0.1"
+async-trait = "0.1.92"

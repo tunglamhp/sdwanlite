@@ -38,6 +38,17 @@ reverse_proxy at an sdwanlite HTTP pool — see `Caddyfile`. ACME for the edge
 hostname is handled by Caddy; wildcard/internal certs stay on sdwanlite's own
 TLS pools.
 
+## 4. Observability
+
+```bash
+docker compose --profile monitoring up -d
+```
+
+- Prometheus scrapes `sdwanlite:8080/metrics` every 15 s.
+- Grafana at `:3000` (anonymous viewer) with a pre-provisioned SDWANLite
+  dashboard: backend health/connections/bytes, pool rejections, BGP RIB +
+  established sessions, uptime.
+
 ## Hardening checklist
 
 - Set `general.api_token` before exposing the API beyond loopback.

@@ -20,6 +20,7 @@ fn decode_key(b64: &str) -> Result<[u8; 32], MeshError> {
 }
 
 struct Peer {
+    #[allow(dead_code)]
     idx: u32,
     tunn: Tunn,
     sock: Arc<UdpSocket>,

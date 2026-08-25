@@ -31,7 +31,7 @@ pub fn zone_apex(domain: &str) -> String {
     }
 }
 
-const API: &str = "https://api.cloudflare.com/client/v4";
+const CF_API: &str = "https://api.cloudflare.com/client/v4";
 
 fn client(token: &str) -> Result<reqwest::Client, AcmeError> {
     reqwest::Client::builder()
@@ -88,7 +88,7 @@ pub async fn cloudflare_txt_create(
     let zone = zone_apex(domain);
     let zones = cf_request(
         reqwest::Method::GET,
-        format!("{API}/zones?name={zone}"),
+        format!("{CF_API}/zones?name={zone}"),
         token,
         None,
     )
@@ -100,7 +100,7 @@ pub async fn cloudflare_txt_create(
 
     let created = cf_request(
         reqwest::Method::POST,
-        format!("{API}/zones/{zone_id}/dns_records"),
+        format!("{CF_API}/zones/{zone_id}/dns_records"),
         token,
         Some(serde_json::json!({
             "type": "TXT",
@@ -125,7 +125,7 @@ pub async fn cloudflare_txt_delete(
     let zone = zone_apex(domain);
     cf_request(
         reqwest::Method::DELETE,
-        format!("{API}/zones/{zone}/dns_records/{record_id}"),
+        format!("{CF_API}/zones/{zone}/dns_records/{record_id}"),
         token,
         None,
     )
