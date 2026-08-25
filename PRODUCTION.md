@@ -51,13 +51,12 @@ docker compose --profile monitoring up -d
 
 ## 5. Portable userspace mesh (experimental)
 
-The `vpn-forwarding` feature (off by default) contains a working boringtun
-WireGuard handshake between two in-process peers — no kernel WG or `wg`
-tools needed. TCP forwarding over the tunnel is under active development;
-enable with:
+The `vpn-forwarding` feature contains a **working userspace WireGuard mesh**:
+full Noise-IK handshake plus TCP forwarding through the tunnel using smoltcp —
+verified end-to-end on any OS, no kernel WG or `wg` tools required.
 
 ```bash
-cargo test -p sdwanlite-mesh --features vpn-forwarding
+cargo test -p sdwanlite-mesh --features vpn-forwarding   # includes E2E tunnel test
 ```
 
 ## Hardening checklist

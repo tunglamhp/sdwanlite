@@ -28,8 +28,6 @@ pub struct CloudflareProvider {
     pub zone: String,
 }
 
-const CF_API: &str = "https://api.cloudflare.com/client/v4";
-
 #[async_trait]
 impl DnsProvider for CloudflareProvider {
     fn name(&self) -> &'static str {

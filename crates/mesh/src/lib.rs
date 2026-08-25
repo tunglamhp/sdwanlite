@@ -487,11 +487,13 @@ mod vpn_tests {
         .await
         .unwrap();
         a.set_peer(format!("127.0.0.1:{}", b.local_udp_port()).parse().unwrap());
+        b.set_peer(format!("127.0.0.1:{}", a.local_udp_port()).parse().unwrap());
 
         // B forwards virtual :8000 -> echo service
         b.serve_forward(8000);
 
         // A dials B's virtual service
+        assert!(a.send_handshake_init(), "handshake init failed");
         let h = a.tcp_open(smoltcp::wire::Ipv4Address::from([10, 7, 0, 2]), 8000).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(20);

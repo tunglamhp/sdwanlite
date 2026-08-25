@@ -244,6 +244,20 @@ impl VpnNode {
     }
 
     /// Update the peer endpoint after creation.
+    /// Explicitly emit a WireGuard handshake initiation to the peer.
+    pub fn send_handshake_init(&mut self) -> bool {
+        let mut tunn = self.shared.tunn.lock();
+        let mut enc = vec![0u8; MTU + 128];
+        match tunn.format_handshake_initiation(&mut enc, true) {
+            boringtun::noise::TunnResult::WriteToNetwork(pkt) => {
+                let peer = *self.shared.peer.lock();
+                let _ = self.shared.udp.try_send_to(pkt, peer);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Make this node responder-only (never initiates handshakes).
     pub fn set_passive(&mut self) {
         self.initiate = false;
@@ -279,10 +293,8 @@ impl VpnNode {
                         boringtun::noise::TunnResult::WriteToNetwork(pkt) => {
                             let _ = self.shared.udp.try_send_to(pkt, src);
                         }
-                        _ => {}
 
                         boringtun::noise::TunnResult::WriteToTunnelV4(pkt, _) => {
-                            eprintln!("[wg] tunneled {} bytes", pkt.len());
                             self.shared.inbound.lock().push_back(pkt.to_vec());
                             break;
                         }
