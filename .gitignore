@@ -1,5 +1,6 @@
-/target
+**/target
 *.deb
 demo_root.html
 *.zip
 *.zip
+web-dist/
