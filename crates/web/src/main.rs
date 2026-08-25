@@ -273,6 +273,9 @@ fn app() -> Element {
                         ("bgp", "🌐", "BGP"),
                         ("lb", "⚖", "Load Balancers"),
                         ("actions", "⚡", "Actions"),
+                        ("firewall", "🛡", "Firewall"),
+                        ("alerts", "🔔", "Alerts"),
+                        ("qos", "📊", "QoS"),
                     ] {
                         button {
                             key: "{id}",
@@ -317,6 +320,9 @@ fn app() -> Element {
                     "bgp" => rsx! { BgpView { status, rib, rib_hist } },
                     "lb" => rsx! { LbView { lb } },
                     "actions" => rsx! { ActionsView {} },
+                "firewall" => rsx! { FirewallView {} },
+                "alerts" => rsx! { AlertsView {} },
+                "qos" => rsx! { QosView {} },
                     _ => rsx! { Overview { status } },
                 }}
                 footer { "sdwanlite · data auto-refreshes · built with Dioxus" }
@@ -1008,7 +1014,124 @@ fn topo_apply_layout(nodes: &mut Signal<Vec<TopoNode>>, mode: &str) {
     }
 }
 
+
+
+
+// ---------------------------------------------------------------------------
+// Firewall
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FirewallData {
+    #[serde(default)]
+    rules: Vec<FirewallRuleView>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FirewallRuleView {
+    action: String,
+    port: u16,
+    protocol: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    comment: String,
+}
+#[component]
+fn FirewallView() -> Element {
+    let data = use_resource(|| async {
+        let rsp = gloo_net::http::Request::get("/api/firewall").send().await.map_err(|e| e.to_string())?;
+        rsp.json::<FirewallData>().await.map_err(|e| e.to_string())
+    });
+    let body = match data.read().as_ref() {
+        Some(Ok(d)) if d.rules.is_empty() => "<div style='color:var(--muted);font-size:13px'>No rules. All traffic allowed.</div>".into(),
+        Some(Ok(d)) => {
+            let mut rows = String::new();
+            for r in &d.rules {
+                let ap = if r.action == "allow" { "<span class='pill ok'>allow</span>" } else { "<span class='pill bad'>deny</span>" };
+                let src = r.source.clone().unwrap_or_else(|| "any".into());
+                rows.push_str(&format!("<tr><td>{}</td><td class='mono'>{}</td><td>{}</td><td class='mono'>{}</td><td>{}</td></tr>", ap, r.port, r.protocol, src, r.comment));
+            }
+            format!("<table><thead><tr><th>Action</th><th>Port</th><th>Protocol</th><th>Source</th><th>Comment</th></tr></thead><tbody>{}</tbody></table>", rows)
+        }
+        Some(Err(e)) => format!("<div style='color:var(--red)'>Error: {e}</div>"),
+        None => "<div style='color:var(--muted)'>loading…</div>".into(),
+    };
+    rsx! { div { class: "card", h3 { "Firewall Rules" } div { dangerous_inner_html: "{body}" } } }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct AlertsData {
+    #[serde(default)]
+    count: usize,
+    #[serde(default)]
+    events: Vec<AlertEventView>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct AlertEventView {
+    timestamp: u64,
+    severity: String,
+    source: String,
+    message: String,
+}
+
+fn chrono_fmt(ts: u64) -> String {
+    let d = ts / 86400; let r = ts % 86400;
+    format!("day+{d} {:02}:{:02}:{:02} UTC", r / 3600, (r % 3600) / 60, r % 60)
+}
+
+#[component]
+fn AlertsView() -> Element {
+    let data = use_resource(|| async {
+        let rsp = gloo_net::http::Request::get("/api/alerts").send().await.map_err(|e| e.to_string())?;
+        rsp.json::<AlertsData>().await.map_err(|e| e.to_string())
+    });
+    let body = match data.read().as_ref() {
+        Some(Ok(d)) if d.events.is_empty() => "<div style='color:var(--muted);font-size:13px'>No events yet.</div>".into(),
+        Some(Ok(d)) => {
+            let mut rows = String::new();
+            for e in d.events.iter().rev().take(50) {
+                let (cls, pl) = match e.severity.as_str() {
+                    "critical" => ("alert-critical", "<span class='pill bad'>critical</span>"),
+                    "warn" => ("alert-warn", "<span class='pill warn'>warn</span>"),
+                    _ => ("alert-info", "<span class='pill info'>info</span>"),
+                };
+                let ts = chrono_fmt(e.timestamp);
+                rows.push_str(&format!("<div class='{cls}' style='padding:8px 0;border-bottom:1px solid var(--border);font-size:13px'>{pl} <span style='margin-left:8px'>{src}: {msg}</span> <span style='float:right;color:var(--muted);font-size:11px'>{ts}</span></div>", cls=cls, pl=pl, src=e.source, msg=e.message, ts=ts));
+            }
+            format!("<div>{}</div>", rows)
+        }
+        Some(Err(e)) => format!("<div style='color:var(--red)'>Error: {e}</div>"),
+        None => "<div style='color:var(--muted)'>loading…</div>".into(),
+    };
+    rsx! { div { class: "card", h3 { "Event Log" } div { dangerous_inner_html: "{body}" } } }
+}
+
+#[component]
+fn QosView() -> Element {
+    let data = use_resource(|| async {
+        let rsp = gloo_net::http::Request::get("/api/lb").send().await.map_err(|e| e.to_string())?;
+        rsp.json::<LbData>().await.map_err(|e| e.to_string())
+    });
+    let body = match data.read().as_ref() {
+        Some(Ok(d)) if d.tcp.is_empty() => "<div style='color:var(--muted);font-size:13px'>no pools</div>".into(),
+        Some(Ok(d)) => {
+            let mut rows = String::new();
+            for p in &d.tcp {
+                let healthy = p.backends.iter().filter(|b| b.healthy).count();
+                let total = p.backends.len();
+                let health = if healthy == total { "<span class='pill ok'>all healthy</span>".into() } else { format!("<span class='pill bad'>{}/{}</span>", healthy, total) };
+                rows.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", p.name, p.algorithm, p.active_conns, p.rejected_conns, total, health));
+            }
+            format!("<table><thead><tr><th>Pool</th><th>Algorithm</th><th>Active</th><th>Rejected</th><th>Backends</th><th>Health</th></tr></thead><tbody>{}</tbody></table>", rows)
+        }
+        Some(Err(e)) => format!("<div style='color:var(--red)'>Error: {e}</div>"),
+        None => "<div style='color:var(--muted)'>loading…</div>".into(),
+    };
+    rsx! { div { class: "card", h3 { "QoS Bandwidth Limits" } div { dangerous_inner_html: "{body}" } } }
+}
+
 fn main() {
     launch(app);
 }
-
