@@ -417,3 +417,44 @@ backends = ["10.0.0.1:80", "10.0.0.2:80"]
         assert!(err.is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tunnel lifecycle + config validation
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum TunnelState {
+    Created,
+    Connecting,
+    Established,
+    Down,
+    Deleted,
+}
+
+#[derive(Clone, Debug)]
+pub struct TunnelPeer {
+    pub name: String,
+    pub public_key: String,
+    pub endpoint: Option<String>,
+    pub allowed_ips: Vec<String>,
+    pub state: TunnelState,
+    pub created_at: u64,
+}
+
+pub fn validate_config(cfg: &Config) -> Vec<String> {
+    let mut errors = Vec::new();
+    for pool in &cfg.lb.tcp_pools {
+        if pool.backends.is_empty() {
+            errors.push(format!("tcp pool '{}': no backends", pool.name));
+        }
+    }
+    for rule in &cfg.firewall {
+        if rule.action != "allow" && rule.action != "deny" {
+            errors.push(format!("firewall: invalid action '{}'", rule.action));
+        }
+    }
+    if cfg.bgp.enabled && cfg.bgp.router_id.is_empty() {
+        errors.push("bgp: router_id is empty".into());
+    }
+    errors
+}

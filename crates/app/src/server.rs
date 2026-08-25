@@ -90,6 +90,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/tls/reload", post(api_tls_reload))
         .route("/api/alerts", get(api_alerts))
         .route("/api/firewall", get(api_firewall_list).post(api_firewall_add).delete(api_firewall_delete))
+        .route("/api/validate", post(api_validate))
         .route("/api/bgp/rib", get(api_rib))
         .route(
             "/api/lb/tcp/:name/backends",
@@ -489,4 +490,15 @@ async fn api_firewall_delete(
         return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
     }
     axum::Json(serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; edit sdwanlite.toml and restart" }))
+}
+
+async fn api_validate(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let errors = sdwanlite_core::validate_config(&state.config);
+    if errors.is_empty() {
+        axum::Json(serde_json::json!({ "valid": true, "errors": [] }))
+    } else {
+        axum::Json(serde_json::json!({ "valid": false, "errors": errors }))
+    }
 }
