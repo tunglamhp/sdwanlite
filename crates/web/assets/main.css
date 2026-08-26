@@ -55,6 +55,10 @@ body { background:var(--bg); color:var(--text); font-family:"Segoe UI",system-ui
 .spacer { flex:1; }
 
 .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+.golden-signals { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
+.golden-signals .kpi .value { font-size:19px; }
+@media(max-width:860px){ .golden-signals{grid-template-columns:1fr 1fr} }
+@media(max-width:520px){ .golden-signals{grid-template-columns:1fr} }
 .kpi { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
   padding:14px 16px; border-left:3px solid var(--primary);
   transition:box-shadow .2s,transform .15s; box-shadow:0 1px 4px rgba(62,54,46,.06); }

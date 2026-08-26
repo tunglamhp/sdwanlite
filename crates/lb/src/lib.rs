@@ -75,7 +75,7 @@ pub mod tcp;
 use sdwanlite_core::Algorithm;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -89,6 +89,10 @@ pub struct Backend {
     total_conns: AtomicU64,
     rx_bytes: AtomicU64,
     tx_bytes: AtomicU64,
+    health_failures: AtomicU64,
+    /// Last 64 connect latencies in microseconds (ring buffer, 0 = empty slot).
+    latencies: Mutex<[u64; 64]>,
+    latencies_next: AtomicUsize,
 }
 
 impl Backend {
@@ -100,6 +104,9 @@ impl Backend {
             total_conns: AtomicU64::new(0),
             rx_bytes: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
+            health_failures: AtomicU64::new(0),
+            latencies: Mutex::new([0; 64]),
+            latencies_next: AtomicUsize::new(0),
         })
     }
 
@@ -108,6 +115,9 @@ impl Backend {
     }
 
     pub fn set_healthy(&self, ok: bool) -> bool {
+        if !ok {
+            self.health_failures.fetch_add(1, Ordering::Relaxed);
+        }
         self.healthy.swap(ok, Ordering::Relaxed) != ok
     }
 
@@ -127,6 +137,36 @@ impl Backend {
         self.tx_bytes.load(Ordering::Relaxed)
     }
 
+    pub fn health_failures(&self) -> u64 {
+        self.health_failures.load(Ordering::Relaxed)
+    }
+
+    pub fn bump_health_failures(&self) {
+        self.health_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_latency_us(&self, us: u64) {
+        let idx = self.latencies_next.fetch_add(1, Ordering::Relaxed) % 64;
+        if let Ok(mut buf) = self.latencies.lock() {
+            buf[idx] = us;
+        }
+    }
+
+    /// Latency percentiles in microseconds from the ring buffer (no samples -> None).
+    pub fn latency_percentiles_us(&self) -> (Option<u64>, Option<u64>) {
+        let buf = match self.latencies.lock() {
+            Ok(b) => *b,
+            Err(_) => return (None, None),
+        };
+        let mut v: Vec<u64> = buf.iter().copied().filter(|x| *x > 0).collect();
+        if v.is_empty() {
+            return (None, None);
+        }
+        v.sort_unstable();
+        let p = |q: usize| -> u64 { v[(v.len() * q).div_ceil(100).max(1) - 1] };
+        (Some(p(50)), Some(p(95)))
+    }
+
     pub(crate) fn add_bytes(&self, up: u64, down: u64) {
         // "up" = client->backend, "down" = backend->client
         if up > 0 {
@@ -139,14 +179,17 @@ impl Backend {
 
     async fn connect(&self) -> std::io::Result<TcpStream> {
         const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+        let started = std::time::Instant::now();
         let s = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(self.addr))
             .await
             .map_err(|_| {
+                self.record_latency_us(CONNECT_TIMEOUT.as_micros() as u64);
                 std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     format!("connect timeout to {}", self.addr),
                 )
             })??;
+        self.record_latency_us(started.elapsed().as_micros() as u64);
         self.active_conns.fetch_add(1, Ordering::Relaxed);
         self.total_conns.fetch_add(1, Ordering::Relaxed);
         Ok(s)
@@ -323,5 +366,47 @@ impl AlertLog {
 
     pub fn list(&self) -> Vec<sdwanlite_core::AlertEvent> {
         self.events.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod golden_signals_tests {
+    use super::*;
+
+    #[test]
+    fn latency_percentiles_empty() {
+        let b = Backend::new("127.0.0.1:80".parse().unwrap());
+        assert_eq!(b.latency_percentiles_us(), (None, None));
+    }
+
+    #[test]
+    fn latency_percentiles_p50_p95() {
+        let b = Backend::new("127.0.0.1:80".parse().unwrap());
+        for us in [100u64, 200, 300, 400, 500, 600, 700, 800, 900, 1000] {
+            b.record_latency_us(us);
+        }
+        let (p50, p95) = b.latency_percentiles_us();
+        assert_eq!(p50, Some(500));
+        assert_eq!(p95, Some(1000));
+    }
+
+    #[test]
+    fn latency_ring_overwrites() {
+        let b = Backend::new("127.0.0.1:80".parse().unwrap());
+        for i in 0..70u64 {
+            b.record_latency_us(i + 1);
+        }
+        // only the last 64 samples remain (7..=70); p50 of that set
+        let (p50, _) = b.latency_percentiles_us();
+        assert!(p50.unwrap() >= 7 && p50.unwrap() <= 70);
+    }
+
+    #[test]
+    fn health_failures_counted() {
+        let b = Backend::new("127.0.0.1:80".parse().unwrap());
+        b.set_healthy(false);
+        b.set_healthy(true);
+        b.set_healthy(false);
+        assert_eq!(b.health_failures(), 2);
     }
 }

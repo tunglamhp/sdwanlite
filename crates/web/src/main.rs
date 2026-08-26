@@ -104,6 +104,101 @@ struct Backend {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct SignalBackend {
+    addr: String,
+    healthy: bool,
+    #[serde(default)]
+    latency_p50_us: Option<u64>,
+    #[serde(default)]
+    latency_p95_us: Option<u64>,
+    #[serde(default)]
+    rx_bytes: u64,
+    #[serde(default)]
+    tx_bytes: u64,
+    #[serde(default)]
+    active_conns: u64,
+    #[serde(default)]
+    health_failures: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SignalPool {
+    name: String,
+    #[serde(default)]
+    latency_p50_us: Option<u64>,
+    #[serde(default)]
+    latency_p95_us: Option<u64>,
+    #[serde(default)]
+    rx_bytes: u64,
+    #[serde(default)]
+    tx_bytes: u64,
+    #[serde(default)]
+    errors: SignalErrors,
+    #[serde(default)]
+    saturation: SignalSaturation,
+    #[serde(default)]
+    backends: Vec<SignalBackend>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SignalErrors {
+    #[serde(default)]
+    unhealthy_backends: usize,
+    #[serde(default)]
+    total_backends: usize,
+    #[serde(default)]
+    loss_pct: f64,
+    #[serde(default)]
+    health_failures: u64,
+    #[serde(default)]
+    rejected_conns: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SignalSaturation {
+    #[serde(default)]
+    active_conns: usize,
+    #[serde(default)]
+    max_conns: usize,
+    #[serde(default)]
+    utilization_pct: f64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct Signals {
+    #[serde(default)]
+    pools: Vec<SignalPool>,
+    #[serde(default)]
+    totals: SignalTotals,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SignalTotals {
+    #[serde(default)]
+    latency_p50_us: Option<u64>,
+    #[serde(default)]
+    latency_p95_us: Option<u64>,
+    #[serde(default)]
+    rx_bytes: u64,
+    #[serde(default)]
+    tx_bytes: u64,
+    #[serde(default)]
+    unhealthy_backends: usize,
+    #[serde(default)]
+    total_backends: usize,
+    #[serde(default)]
+    health_failures: u64,
+    #[serde(default)]
+    rejected_conns: u64,
+    #[serde(default)]
+    active_conns: usize,
+    #[serde(default)]
+    max_conns: usize,
+    #[serde(default)]
+    utilization_pct: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct HttpPool {
     name: String,
     #[serde(default)]
@@ -350,9 +445,109 @@ fn app() -> Element {
 // Overview
 // ---------------------------------------------------------------------------
 
+fn fmt_bps(bytes: u64) -> String {
+    // cumulative bytes -> human; bps computed by caller with delta
+    let v = bytes as f64;
+    if v >= 1_073_741_824.0 { format!("{:.1} GiB", v / 1_073_741_824.0) }
+    else if v >= 1_048_576.0 { format!("{:.1} MiB", v / 1_048_576.0) }
+    else if v >= 1024.0 { format!("{:.1} KiB", v / 1024.0) }
+    else { format!("{} B", bytes) }
+}
+
+fn fmt_us(us: Option<u64>) -> String {
+    match us {
+        None => "—".into(),
+        Some(x) if x >= 1_000_000 => format!("{:.2} s", x as f64 / 1e6),
+        Some(x) if x >= 1_000 => format!("{:.1} ms", x as f64 / 1e3),
+        Some(x) => format!("{} µs", x),
+    }
+}
+
+#[component]
+fn GoldenSignalsRow() -> Element {
+    let mut prev = use_signal(|| (0u64, 0u64, 0u64)); // rx, tx, timestamp_ms
+    let mut bps = use_signal(|| (0u64, 0u64)); // in, out
+    let data = use_resource(move || async move {
+        let rsp = gloo_net::http::Request::get("/api/signals").send().await;
+        match rsp {
+            Ok(r) => r.json::<Signals>().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    });
+    // compute bps delta after each fetch
+    use_effect(move || {
+        let d = data.read();
+        if let Some(Ok(sig)) = d.as_ref() {
+            let now = web_sys::window().map(|w| w.performance().map(|p| p.now() as u64).unwrap_or(0)).unwrap_or(0);
+            let (prx, ptx, pts) = *prev.read();
+            let (rx, tx) = (sig.totals.rx_bytes, sig.totals.tx_bytes);
+            if pts > 0 && now > pts {
+                let dt = (now - pts) / 1000;
+                if dt > 0 {
+                    bps.set((rx.saturating_sub(prx) / dt, tx.saturating_sub(ptx) / dt));
+                }
+            }
+            prev.set((rx, tx, now));
+        }
+    });
+
+    let sig = match data.read().as_ref() {
+        Some(Ok(s)) => s.clone(),
+        _ => Signals::default(),
+    };
+    let t = &sig.totals;
+    let err_pill = if t.total_backends == 0 {
+        "<span class='pill info'>no backends</span>".to_string()
+    } else if t.unhealthy_backends == 0 {
+        "<span class='pill ok'>all healthy</span>".to_string()
+    } else {
+        format!("<span class='pill bad'>{}/{} down</span>", t.unhealthy_backends, t.total_backends)
+    };
+    let sat_pill = if t.max_conns == 0 {
+        "<span class='pill info'>unlimited</span>".to_string()
+    } else if t.utilization_pct >= 80.0 {
+        format!("<span class='pill bad'>{:.0}%</span>", t.utilization_pct)
+    } else {
+        format!("<span class='pill ok'>{:.0}%</span>", t.utilization_pct)
+    };
+
+    rsx! {
+        div { class: "golden-signals",
+            div { class: "kpi",
+                style: "border-left-color:var(--amber)",
+                div { class: "label", "LATENCY" }
+                div { class: "value", "{fmt_us(t.latency_p50_us)}" }
+                div { class: "sub", "p95 {fmt_us(t.latency_p95_us)} · connect p50/p95" }
+            }
+            div { class: "kpi",
+                style: "border-left-color:var(--primary)",
+                div { class: "label", "TRAFFIC" }
+                div { class: "value", "↓ {fmt_bps(bps.read().0)}" }
+                div { class: "sub", "↑ {fmt_bps(bps.read().1)} · total {fmt_bps(t.rx_bytes + t.tx_bytes)}" }
+            }
+            div { class: "kpi",
+                style: "border-left-color:var(--red)",
+                div { class: "label", "ERRORS" }
+                div { class: "value", dangerous_inner_html: "{err_pill}" }
+                div { class: "sub", "hc failures {t.health_failures} · rejected {t.rejected_conns}" }
+            }
+            div { class: "kpi",
+                style: "border-left-color:var(--accent)",
+                div { class: "label", "SATURATION" }
+                div { class: "value", dangerous_inner_html: "{sat_pill}" }
+                div { class: "sub",
+                    "{t.active_conns} conns / max ",
+                    if t.max_conns == 0 { "∞" } else { "{t.max_conns}" },
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn Overview(status: Signal<Result<Status, String>>) -> Element {
     rsx! {
+        GoldenSignalsRow {}
         div { class: "kpis",
             kpi_card { label: "Node",
                 value: match &*status.read() { Ok(s) => s.node.clone(), _ => "—".to_string() },

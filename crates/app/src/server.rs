@@ -98,17 +98,22 @@ pub async fn auth_middleware(
         base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass))
     });
 
-    match req.headers().get(axum::http::header::AUTHORIZATION) {
-        Some(v) if v.to_str().unwrap_or("") == expected => next.run(req).await,
-        _ => {
-            let mut rsp = axum::response::Response::new(axum::body::Body::from("Unauthorized"));
-            *rsp.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
-            rsp.headers_mut().insert(
-                axum::http::header::WWW_AUTHENTICATE,
-                axum::http::HeaderValue::from_static("Basic realm=\"sdwanlite\""),
-            );
-            rsp
-        }
+    let authorized = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| ct_eq(v.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false);
+    if authorized {
+        next.run(req).await
+    } else {
+        let mut rsp = axum::response::Response::new(axum::body::Body::from("Unauthorized"));
+        *rsp.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+        rsp.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static("Basic realm=\"sdwanlite\""),
+        );
+        rsp
     }
 }
 
@@ -117,6 +122,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/api/status", get(api_status))
         .route("/api/lb", get(api_lb))
+        .route("/api/signals", get(api_signals))
         .route("/api/mesh/keypair", get(api_keypair))
         .route("/api/mesh/status", get(api_mesh_status))
         .route("/metrics", get(api_metrics))
@@ -181,6 +187,184 @@ async fn api_status(
             http_pools: state.http_pools.len(),
         },
     })
+}
+
+#[derive(Serialize)]
+struct SignalBackendView {
+    addr: String,
+    healthy: bool,
+    latency_p50_us: Option<u64>,
+    latency_p95_us: Option<u64>,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    active_conns: u64,
+    health_failures: u64,
+}
+
+#[derive(Serialize)]
+struct SignalPoolView {
+    name: String,
+    latency_p50_us: Option<u64>,
+    latency_p95_us: Option<u64>,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    errors: SignalErrorsView,
+    saturation: SignalSaturationView,
+    backends: Vec<SignalBackendView>,
+}
+
+#[derive(Serialize)]
+struct SignalErrorsView {
+    unhealthy_backends: usize,
+    total_backends: usize,
+    loss_pct: f64,
+    health_failures: u64,
+    rejected_conns: u64,
+}
+
+#[derive(Serialize)]
+struct SignalSaturationView {
+    active_conns: usize,
+    max_conns: usize, // 0 = unlimited
+    utilization_pct: f64,
+}
+
+#[derive(Serialize)]
+struct SignalsView {
+    pools: Vec<SignalPoolView>,
+    totals: SignalTotalsView,
+}
+
+#[derive(Serialize)]
+struct SignalTotalsView {
+    latency_p50_us: Option<u64>,
+    latency_p95_us: Option<u64>,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    unhealthy_backends: usize,
+    total_backends: usize,
+    health_failures: u64,
+    rejected_conns: u64,
+    active_conns: usize,
+    max_conns: usize,
+    utilization_pct: f64,
+}
+
+/// Google SRE Four Golden Signals per pool and system-wide.
+async fn api_signals(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<SignalsView> {
+    let mut pools = Vec::new();
+    let mut tot_rx = 0u64;
+    let mut tot_tx = 0u64;
+    let mut tot_unhealthy = 0usize;
+    let mut tot_backends = 0usize;
+    let mut tot_hc_fail = 0u64;
+    let mut tot_rejected = 0u64;
+    let mut tot_active = 0usize;
+    let mut tot_max = 0usize;
+    let mut all_lat: Vec<u64> = Vec::new();
+
+    for pool in &state.tcp_pools {
+        let backends = pool.backends().await;
+        let total = backends.len();
+        let unhealthy = backends.iter().filter(|b| !b.is_healthy()).count();
+        let mut pool_rx = 0u64;
+        let mut pool_tx = 0u64;
+        let mut pool_hc = 0u64;
+        let mut bv = Vec::with_capacity(total);
+        for b in &backends {
+            let (p50, p95) = b.latency_percentiles_us();
+            if let Some(x) = p50 {
+                all_lat.push(x);
+            }
+            pool_rx += b.rx_bytes();
+            pool_tx += b.tx_bytes();
+            pool_hc += b.health_failures();
+            bv.push(SignalBackendView {
+                addr: b.addr.to_string(),
+                healthy: b.is_healthy(),
+                latency_p50_us: p50,
+                latency_p95_us: p95,
+                rx_bytes: b.rx_bytes(),
+                tx_bytes: b.tx_bytes(),
+                active_conns: b.active_conns(),
+                health_failures: b.health_failures(),
+            });
+        }
+        let active = pool.active_conns();
+        let max = pool.max_conns();
+        let loss = if total > 0 {
+            unhealthy as f64 * 100.0 / total as f64
+        } else {
+            0.0
+        };
+        let util = if max > 0 {
+            active as f64 * 100.0 / max as f64
+        } else {
+            0.0
+        };
+        tot_rx += pool_rx;
+        tot_tx += pool_tx;
+        tot_unhealthy += unhealthy;
+        tot_backends += total;
+        tot_hc_fail += pool_hc;
+        tot_rejected += pool.rejected_conns();
+        tot_active += active;
+        tot_max += max;
+        pools.push(SignalPoolView {
+            name: pool.name.clone(),
+            latency_p50_us: percentile(&all_lat, 50),
+            latency_p95_us: percentile(&all_lat, 95),
+            rx_bytes: pool_rx,
+            tx_bytes: pool_tx,
+            errors: SignalErrorsView {
+                unhealthy_backends: unhealthy,
+                total_backends: total,
+                loss_pct: (loss * 100.0).round() / 100.0,
+                health_failures: pool_hc,
+                rejected_conns: pool.rejected_conns(),
+            },
+            saturation: SignalSaturationView {
+                active_conns: active,
+                max_conns: max,
+                utilization_pct: (util * 100.0).round() / 100.0,
+            },
+            backends: bv,
+        });
+    }
+
+    let util = if tot_max > 0 {
+        tot_active as f64 * 100.0 / tot_max as f64
+    } else {
+        0.0
+    };
+    axum::Json(SignalsView {
+        totals: SignalTotalsView {
+            latency_p50_us: percentile(&all_lat, 50),
+            latency_p95_us: percentile(&all_lat, 95),
+            rx_bytes: tot_rx,
+            tx_bytes: tot_tx,
+            unhealthy_backends: tot_unhealthy,
+            total_backends: tot_backends,
+            health_failures: tot_hc_fail,
+            rejected_conns: tot_rejected,
+            active_conns: tot_active,
+            max_conns: tot_max,
+            utilization_pct: (util * 100.0).round() / 100.0,
+        },
+        pools,
+    })
+}
+
+/// Nearest-rank percentile of a sampled list (ignores zeros).
+fn percentile(samples: &[u64], q: usize) -> Option<u64> {
+    let mut v: Vec<u64> = samples.iter().copied().filter(|x| *x > 0).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[(v.len() * q).div_ceil(100).max(1) - 1])
 }
 
 async fn api_lb(

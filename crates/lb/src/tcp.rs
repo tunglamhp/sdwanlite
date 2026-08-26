@@ -80,6 +80,10 @@ impl TcpLoadBalancer {
     }
 
     /// Set the maximum concurrent client connections (0 = unlimited).
+    pub fn max_conns(&self) -> usize {
+        self.max_conns.load(Ordering::Relaxed)
+    }
+
     pub fn set_max_conns(&self, max: usize) {
         self.max_conns.store(max, Ordering::Relaxed);
     }
