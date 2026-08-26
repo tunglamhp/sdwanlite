@@ -71,6 +71,7 @@ impl StopFlag {
 }
 
 pub mod tcp;
+pub use tcp::TcpLoadBalancer;
 
 use sdwanlite_core::Algorithm;
 use std::net::SocketAddr;

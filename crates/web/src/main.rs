@@ -418,6 +418,7 @@ fn app() -> Element {
                         "mesh" => "WireGuard Mesh",
                         "bgp" => "BGP",
                         "lb" => "Load Balancers",
+                        "policy" => "Path Policy",
                         "actions" => "Quick Actions",
                         _ => "Dashboard Overview",
                     }} }
@@ -433,6 +434,7 @@ fn app() -> Element {
                 "firewall" => rsx! { FirewallView {} },
                 "alerts" => rsx! { AlertsView {} },
                 "qos" => rsx! { QosView {} },
+                    "policy" => rsx! { PolicyView {} },
                     _ => rsx! { Overview { status } },
                 }}
                 footer { "sdwanlite · data auto-refreshes · built with Dioxus" }
@@ -822,6 +824,10 @@ enum ConfigTab { General, HealthCheck, Advanced }
 
 #[component]
 fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<()>) -> Element {
+    let pool_name_title = pool_name.clone();
+    let mut saving = use_signal(|| false);
+    let mut save_err = use_signal(String::new);
+
     let mut tab = use_signal(|| ConfigTab::General);
     let mut hc_interval = use_signal(|| "5".to_string());
     let mut hc_timeout = use_signal(|| "3".to_string());
@@ -830,6 +836,39 @@ fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<
     let mut conn_timeout = use_signal(|| "30".to_string());
     let mut max_conns = use_signal(|| "1000".to_string());
     let mut drain_mode = use_signal(|| false);
+    let mut algo_sel = use_signal(|| algorithm.clone());
+    let save_config = move |_| {
+        let pool_name = pool_name.clone();
+        spawn(async move {
+            saving.set(true);
+            save_err.set(String::new());
+            let cur_algo = algo_sel.read().clone();
+            let cur_max = max_conns.read().parse::<usize>().ok();
+            let cur_hc_i = hc_interval.read().parse::<u64>().ok();
+            let cur_hc_t = hc_timeout.read().parse::<u64>().ok();
+            let cur_drain = *drain_mode.read();
+            let body = serde_json::json!({
+                "algorithm": cur_algo,
+                "max_conns": cur_max,
+                "hc_interval_secs": cur_hc_i,
+                "hc_timeout_secs": cur_hc_t,
+                "drain": cur_drain,
+            });
+            let url = format!("/api/lb/tcp/{pool_name}/config");
+            let req = gloo_net::http::Request::put(&url)
+                .header("Content-Type", "application/json")
+                .body(body.to_string());
+            match req {
+                Ok(r) => match r.send().await {
+                    Ok(rsp) if rsp.ok() => on_close(()),
+                    Ok(rsp) => save_err.set(format!("save failed: HTTP {}", rsp.status())),
+                    Err(e) => save_err.set(format!("save failed: {e}")),
+                },
+                Err(e) => save_err.set(format!("save failed: {e}")),
+            }
+            saving.set(false);
+        });
+    };
 
     let tab_name = |t: &ConfigTab| match t {
         ConfigTab::General => "General",
@@ -844,7 +883,7 @@ fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<
             div {
                 class: "modal",
                 onclick: move |e| e.stop_propagation(),
-                h3 { "⚙ Configure pool: {pool_name}" }
+                h3 { "⚙ Configure pool: {pool_name_title}" }
                 div { class: "tabs",
                     for t in [ConfigTab::General, ConfigTab::HealthCheck, ConfigTab::Advanced] {
                         button {
@@ -932,8 +971,14 @@ fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<
                 }
                 div { class: "modal-actions",
                     button { class: "btn", onclick: move |_| on_close(()), "Cancel" }
-                    button { class: "btn", style: "background:var(--primary);color:#fff;border-color:var(--primary)",
-                        onclick: move |_| on_close(()), "Apply" }
+                    if !save_err.read().is_empty() {
+                        span { style: "color:var(--red);font-size:12px;margin-right:auto", "{save_err}" }
+                    }
+                    button { class: "btn", disabled: *saving.read(),
+                        style: "background:var(--primary);color:#fff;border-color:var(--primary)",
+                        onclick: save_config,
+                        if *saving.read() { "Saving…" } else { "Apply" }
+                    }
                 }
             }
         }
@@ -1518,4 +1563,510 @@ fn QosView() -> Element {
 
 fn main() {
     launch(app);
+}
+
+// ---------------------------------------------------------------------------
+// Path Policy view (labels + policies, flexiWAN/Viptela-style)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+struct PathLabel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    interfaces: Vec<String>,
+    #[serde(default)]
+    tunnels: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+struct RouteAction {
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    order: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+struct PolicyRule {
+    #[serde(default, rename = "match")]
+    rule_match: RuleMatch,
+    #[serde(default)]
+    action: RouteAction,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+struct RuleMatch {
+    #[serde(default)]
+    app: Option<String>,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    dst_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
+struct Policy {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    rules: Vec<PolicyRule>,
+    #[serde(default)]
+    default_action: RouteAction,
+    #[serde(default)]
+    installed: bool,
+}
+
+async fn put_json<T: serde::Serialize>(url: &str, body: &T) -> Result<(), String> {
+    let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let req = gloo_net::http::Request::put(url)
+        .header("Content-Type", "application/json")
+        .body(json)
+        .map_err(|e| e.to_string())?;
+    let rsp = req.send().await.map_err(|e| e.to_string())?;
+    let text = rsp.text().await.unwrap_or_default();
+    if rsp.ok() {
+        Ok(())
+    } else {
+        Err(format!("HTTP {} — {}", rsp.status(), text))
+    }
+}
+
+#[component]
+fn PolicyView() -> Element {
+    let mut labels: Signal<Vec<PathLabel>> = use_signal(Vec::new);
+    let mut policies: Signal<Vec<Policy>> = use_signal(Vec::new);
+    let mut toast: Signal<String> = use_signal(String::new);
+    // label form state
+    let mut lf_name = use_signal(String::new);
+    let mut lf_desc = use_signal(String::new);
+    let mut lf_ifaces = use_signal(String::new);
+    let mut lf_tunnels = use_signal(String::new);
+    let mut lf_editing: Signal<Option<String>> = use_signal(|| None);
+    let mut show_label_form: Signal<bool> = use_signal(|| false);
+    // policy form state (rule builder)
+    let mut pf_name = use_signal(String::new);
+    let mut pf_app = use_signal(String::new);
+    let mut pf_proto = use_signal(String::new);
+    let mut pf_port = use_signal(String::new);
+    let mut pf_labels = use_signal(String::new); // comma-separated
+    let mut pf_order = use_signal(|| "priority-failover".to_string());
+    let mut pf_def_labels = use_signal(String::new);
+    let mut pf_def_order = use_signal(|| "load-balance".to_string());
+    let mut pf_error = use_signal(String::new);
+
+    let fetch_all = move || {
+        spawn(async move {
+            if let Ok(r) = gloo_net::http::Request::get("/api/labels").send().await {
+                if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<PathLabel>>>().await {
+                    labels.set(v.get("labels").cloned().unwrap_or_default());
+                }
+            }
+            if let Ok(r) = gloo_net::http::Request::get("/api/policies").send().await {
+                if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<Policy>>>().await {
+                    policies.set(v.get("policies").cloned().unwrap_or_default());
+                }
+            }
+        });
+    };
+    use_effect(move || fetch_all());
+
+    // ---- label CRUD ----
+    let save_label = move || {
+        spawn(async move {
+            let name = lf_name.read().trim().to_string();
+            if name.is_empty() {
+                toast.set("Label name is required".into());
+                return;
+            }
+            let csv = |s: &String| -> Vec<String> {
+                s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+            };
+            let mut new_list: Vec<PathLabel> = labels.read().clone();
+            let label = PathLabel {
+                name: name.clone(),
+                description: lf_desc.read().clone(),
+                interfaces: csv(&lf_ifaces.read()),
+                tunnels: csv(&lf_tunnels.read()),
+            };
+            match lf_editing.read().as_ref() {
+                Some(old_name) => {
+                    if let Some(slot) = new_list.iter_mut().find(|l| &l.name == old_name) {
+                        *slot = label;
+                    }
+                }
+                None => {
+                    if new_list.iter().any(|l| l.name == name) {
+                        toast.set(format!("Label {name} already exists"));
+                        return;
+                    }
+                    new_list.push(label);
+                }
+            }
+            match put_json("/api/labels", &new_list).await {
+                Ok(()) => {
+                    toast.set("Labels saved".into());
+                    show_label_form.set(false);
+                    lf_editing.set(None);
+                    if let Ok(r) = gloo_net::http::Request::get("/api/labels").send().await {
+                        if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<PathLabel>>>().await {
+                            labels.set(v.get("labels").cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                Err(e) => toast.set(format!("Save failed: {e}")),
+            }
+        });
+    };
+
+    let delete_label = move |name: String| {
+        spawn(async move {
+            let new_list: Vec<PathLabel> = labels.read().iter().filter(|l| l.name != name).cloned().collect();
+            match put_json("/api/labels", &new_list).await {
+                Ok(()) => {
+                    toast.set(format!("Label {name} deleted"));
+                    if let Ok(r) = gloo_net::http::Request::get("/api/labels").send().await {
+                        if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<PathLabel>>>().await {
+                            labels.set(v.get("labels").cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                Err(e) => toast.set(format!("Delete failed: {e}")),
+            }
+        });
+    };
+
+    // ---- policy create (rule builder) ----
+    let mut create_policy = move || {
+        pf_error.set(String::new());
+        let name = pf_name.read().trim().to_string();
+        if name.is_empty() {
+            pf_error.set("Policy name is required".into());
+            return;
+        }
+        let app = pf_app.read().trim().to_string();
+        let proto = pf_proto.read().trim().to_string();
+        let port: Option<u16> = pf_port.read().trim().parse().ok();
+        let has_match = !app.is_empty() || !proto.is_empty() || port.is_some();
+        // client-side validation matching backend: no match-all rule mid-list
+        if !has_match {
+            pf_error.set("Rule must match at least one of: app, protocol, port (match-all is reserved for the implicit default)".into());
+            return;
+        }
+        let csv = |s: &String| -> Vec<String> {
+            s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+        };
+        let rule_labels = csv(&pf_labels.read());
+        if rule_labels.is_empty() {
+            pf_error.set("Rule must route via at least one label".into());
+            return;
+        }
+        let def_labels = csv(&pf_def_labels.read());
+        if def_labels.is_empty() {
+            pf_error.set("Default action must route via at least one label".into());
+            return;
+        }
+        // referenced labels must exist
+        let known: Vec<String> = labels.read().iter().map(|l| l.name.clone()).collect();
+        for l in rule_labels.iter().chain(def_labels.iter()) {
+            if !known.contains(l) {
+                pf_error.set(format!("Unknown label: {l} — create it first"));
+                return;
+            }
+        }
+        let policy = Policy {
+            name,
+            description: String::new(),
+            rules: vec![PolicyRule {
+                rule_match: RuleMatch {
+                    app: if app.is_empty() { None } else { Some(app) },
+                    protocol: if proto.is_empty() { None } else { Some(proto) },
+                    dst_port: port,
+                },
+                action: RouteAction { labels: rule_labels, order: pf_order.read().clone() },
+            }],
+            default_action: RouteAction { labels: def_labels, order: pf_def_order.read().clone() },
+            installed: false,
+        };
+        let mut new_list: Vec<Policy> = policies.read().clone();
+        if new_list.iter().any(|p| p.name == policy.name) {
+            pf_error.set("Policy name already exists".into());
+            return;
+        }
+        new_list.push(policy);
+        let list = new_list.clone();
+        spawn(async move {
+            match put_json("/api/policies", &list).await {
+                Ok(()) => {
+                    toast.set("Policy created".into());
+                    pf_name.set(String::new());
+                    pf_app.set(String::new());
+                    pf_proto.set(String::new());
+                    pf_port.set(String::new());
+                    pf_labels.set(String::new());
+                    if let Ok(r) = gloo_net::http::Request::get("/api/policies").send().await {
+                        if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<Policy>>>().await {
+                            policies.set(v.get("policies").cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                Err(e) => toast.set(format!("Create failed: {e}")),
+            }
+        });
+    };
+
+    let toggle_install = move |name: String, install: bool| {
+        spawn(async move {
+            let verb = if install { "install" } else { "uninstall" };
+            let url = format!("/api/policies/{name}/{verb}");
+            match gloo_net::http::Request::post(&url).send().await {
+                Ok(r) if r.ok() => {
+                    toast.set(format!("Policy {name} {verb}ed"));
+                    if let Ok(r) = gloo_net::http::Request::get("/api/policies").send().await {
+                        if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<Policy>>>().await {
+                            policies.set(v.get("policies").cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                Ok(r) => toast.set(format!("{verb} failed: {}", r.status())),
+                Err(e) => toast.set(format!("{verb} failed: {e}")),
+            }
+        });
+    };
+
+    let delete_policy = move |name: String| {
+        spawn(async move {
+            let new_list: Vec<Policy> = policies.read().iter().filter(|p| p.name != name).cloned().collect();
+            match put_json("/api/policies", &new_list).await {
+                Ok(()) => {
+                    toast.set(format!("Policy {name} deleted"));
+                    if let Ok(r) = gloo_net::http::Request::get("/api/policies").send().await {
+                        if let Ok(v) = r.json::<std::collections::HashMap<String, Vec<Policy>>>().await {
+                            policies.set(v.get("policies").cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                Err(e) => toast.set(format!("Delete failed: {e}")),
+            }
+        });
+    };
+
+    let known_labels: Vec<String> = labels.read().iter().map(|l| l.name.clone()).collect();
+    let label_rows: Vec<(String, String, String, String, String)> = labels.read().iter()
+        .map(|l| {
+            let n = l.name.clone();
+            (n.clone(), l.description.clone(), l.interfaces.join(", "), l.tunnels.join(", "), n)
+        })
+        .collect();
+
+    rsx! {
+        div {
+            if !toast.read().is_empty() {
+                div { class: "toast", "{toast}" }
+            }
+
+            // ================= Path Labels =================
+            div { class: "card",
+                div { style: "display:flex;align-items:center;gap:10px",
+                    h3 { "Path Labels" }
+                    div { class: "spacer" }
+                    button { class: "btn", onclick: move |_| {
+                            lf_editing.set(None);
+                            lf_name.set(String::new());
+                            lf_desc.set(String::new());
+                            lf_ifaces.set(String::new());
+                            lf_tunnels.set(String::new());
+                            show_label_form.toggle();
+                        },
+                        if *show_label_form.read() { "✕ Close" } else { "+ Add label" }
+                    }
+                }
+                table {
+                    thead { tr { th { "Name" } th { "Description" } th { "Interfaces" } th { "Tunnels" } th { "" } } }
+                    tbody {
+                        for (row_name, row_desc, row_ifaces, row_tunnels, row_name_del) in label_rows.clone().into_iter() {
+                            tr {
+                                key: "{row_name}",
+                                td { class: "mono", "{row_name}" }
+                                td { "{row_desc}" }
+                                td { "{row_ifaces}" }
+                                td { "{row_tunnels}" }
+                                td { style: "white-space:nowrap",
+                                    button { class: "btn", onclick: move |_| {
+                                            lf_editing.set(Some(row_name.clone()));
+                                            lf_name.set(row_name.clone());
+                                            lf_desc.set(row_desc.clone());
+                                            lf_ifaces.set(row_ifaces.clone());
+                                            lf_tunnels.set(row_tunnels.clone());
+                                            show_label_form.set(true);
+                                        }, "✎" }
+                                    button { class: "btn danger", style: "margin-left:4px",
+                                        onclick: move |_| delete_label(row_name_del.clone()), "🗑" }
+                                }
+                            }
+                        }
+                        if labels.read().is_empty() {
+                            tr { td { colspan: "5", style: "color:var(--muted)", "no labels — add one to start" } }
+                        }
+                    }
+                }
+                if *show_label_form.read() {
+                    div { class: "form-row",
+                        div { class: "form-group",
+                            label { "Name *" }
+                            input { value: "{lf_name}", placeholder: "ISP1", oninput: move |e| lf_name.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Description" }
+                            input { value: "{lf_desc}", placeholder: "primary fiber", oninput: move |e| lf_desc.set(e.value()) }
+                        }
+                    }
+                    div { class: "form-row",
+                        div { class: "form-group",
+                            label { "Interfaces (comma-separated)" }
+                            input { value: "{lf_ifaces}", placeholder: "wan0, wan1", oninput: move |e| lf_ifaces.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Tunnels (comma-separated)" }
+                            input { value: "{lf_tunnels}", placeholder: "wg-isp1", oninput: move |e| lf_tunnels.set(e.value()) }
+                        }
+                        button { class: "btn", style: "align-self:end",
+                            onclick: move |_| save_label(),
+                            if lf_editing.read().is_some() { "Update" } else { "Create" }
+                        }
+                    }
+                }
+            }
+
+            // ================= Policies =================
+            div { class: "card",
+                h3 { "Policies (evaluated top-down; implicit match-all default last)" }
+                for (idx, p) in policies.read().iter().enumerate() {
+                    div { class: "card", style: "margin-bottom:10px",
+                        div { style: "display:flex;align-items:center;gap:10px",
+                            span { class: "pill info", "#{idx + 1}" }
+                            b { class: "mono", "{p.name}" }
+                            if p.installed { span { class: "pill ok", "installed" } }
+                            div { class: "spacer" }
+                            button { class: "btn",
+                                onclick: { let n = p.name.clone(); let cur = p.installed; move |_| toggle_install(n.clone(), !cur) },
+                                if p.installed { "Uninstall" } else { "Install" }
+                            }
+                            button { class: "btn danger", style: "margin-left:4px",
+                                onclick: { let n = p.name.clone(); move |_| delete_policy(n.clone()) }, "🗑" }
+                        }
+                        for r in p.rules.iter() {
+                            div { class: "kv-row", style: "margin-left:24px",
+                                span { class: "k",
+                                    "match: ",
+                                    {match_match_desc(&r.rule_match)}
+                                }
+                                span { "→ route via ",
+                                    b { class: "mono", "{r.action.labels.join(\" | \")}" },
+                                    " ({r.action.order})"
+                                }
+                            }
+                        }
+                        div { class: "kv-row", style: "margin-left:24px",
+                            span { class: "k", "match: default (match-all)" }
+                            span { "→ route via ",
+                                b { class: "mono", "{p.default_action.labels.join(\" | \")}" },
+                                " ({p.default_action.order})"
+                            }
+                        }
+                    }
+                }
+                if policies.read().is_empty() {
+                    div { style: "color:var(--muted);font-size:13px", "no policies yet" }
+                }
+            }
+
+            // ================= Create policy (rule builder) =================
+            div { class: "card",
+                h3 { "Create policy" }
+                div { class: "form-row",
+                    div { class: "form-group",
+                        label { "Policy name *" }
+                        input { value: "{pf_name}", placeholder: "voip-priority", oninput: move |e| pf_name.set(e.value()) }
+                    }
+                }
+                details { class: "advanced", open: "true",
+                    summary { "Rule 1 — match" }
+                    div { class: "form-row", style: "margin-top:10px",
+                        div { class: "form-group",
+                            label { "App (e.g. voip, video)" }
+                            input { value: "{pf_app}", placeholder: "voip", oninput: move |e| pf_app.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Protocol (tcp/udp)" }
+                            input { value: "{pf_proto}", placeholder: "udp", oninput: move |e| pf_proto.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Dst port" }
+                            input { r#type: "number", value: "{pf_port}", placeholder: "5060", oninput: move |e| pf_port.set(e.value()) }
+                        }
+                    }
+                }
+                details { class: "advanced", open: "true",
+                    summary { "Rule 1 — action" }
+                    div { class: "form-row", style: "margin-top:10px",
+                        div { class: "form-group",
+                            label { "Route via labels * (comma-separated)" }
+                            input { value: "{pf_labels}", placeholder: "MPLS, ISP1",
+                                oninput: move |e| pf_labels.set(e.value()) }
+                            if !known_labels.is_empty() {
+                                div { style: "font-size:11px;color:var(--muted);margin-top:3px",
+                                    "available: {known_labels.join(\", \")}"
+                                }
+                            }
+                        }
+                        div { class: "form-group",
+                            label { "Selection order" }
+                            select { value: "{pf_order}", oninput: move |e| pf_order.set(e.value()),
+                                option { value: "priority-failover", "priority-failover" }
+                                option { value: "load-balance", "load-balance" }
+                                option { value: "quality-based", "quality-based" }
+                            }
+                        }
+                    }
+                }
+                details { class: "advanced",
+                    summary { "Default action (match-all fallback)" }
+                    div { class: "form-row", style: "margin-top:10px",
+                        div { class: "form-group",
+                            label { "Route via labels *" }
+                            input { value: "{pf_def_labels}", placeholder: "ISP1, LTE", oninput: move |e| pf_def_labels.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Selection order" }
+                            select { value: "{pf_def_order}", oninput: move |e| pf_def_order.set(e.value()),
+                                option { value: "priority-failover", "priority-failover" }
+                                option { value: "load-balance", "load-balance" }
+                                option { value: "quality-based", "quality-based" }
+                            }
+                        }
+                    }
+                }
+                if !pf_error.read().is_empty() {
+                    div { style: "color:var(--red);font-size:12px;margin-top:8px", "{pf_error}" }
+                }
+                div { style: "margin-top:10px",
+                    button { class: "btn", style: "background:var(--primary);color:#fff;border-color:var(--primary)",
+                        onclick: move |_| create_policy(), "Create policy" }
+                }
+            }
+        }
+    }
+}
+
+fn match_match_desc(m: &RuleMatch) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(a) = &m.app { parts.push(format!("app={a}")); }
+    if let Some(p) = &m.protocol { parts.push(format!("proto={p}")); }
+    if let Some(p) = m.dst_port { parts.push(format!("port={p}")); }
+    if parts.is_empty() { "match-all".into() } else { parts.join(" ") }
 }

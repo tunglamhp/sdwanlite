@@ -311,6 +311,7 @@ impl HttpLoadBalancer {
                 buffered.truncate(want.min(buffered.len()));
             }
             let mut upload_err: Option<std::io::Error> = None;
+            let mut sent: usize = buffered.len();
             if !buffered.is_empty() {
                 if let Err(e) = crate::h2up::send_all(&mut send_stream, &buffered).await {
                     upload_err = Some(e);
@@ -318,7 +319,6 @@ impl HttpLoadBalancer {
             }
             if upload_err.is_none() {
                 if let Some(rem_total) = content_len.map(|l| l.saturating_sub(buffered.len())) {
-                    let mut sent = buffered.len();
                     while rem_total.saturating_sub(sent) > 0 {
                         let mut tmp = [0u8; 16384];
                         let want = (rem_total - sent).min(tmp.len());
@@ -335,7 +335,10 @@ impl HttpLoadBalancer {
                         let mut tmp = [0u8; 16384];
                         match client.read(&mut tmp).await {
                             Ok(0) | Err(_) => break,
-                            Ok(n) => crate::h2up::send_all(&mut send_stream, &tmp[..n]).await?,
+                            Ok(n) => {
+                                crate::h2up::send_all(&mut send_stream, &tmp[..n]).await?;
+                                sent += n;
+                            }
                         }
                     }
                 }
@@ -358,7 +361,8 @@ impl HttpLoadBalancer {
                     continue;
                 }
             };
-            be.add_bytes(0, 0); // byte accounting happens via pump for h1; keep gauge simple
+            // byte accounting: `sent` = client->backend upload, body chunks = backend->client
+            let mut down_bytes = 0u64;
 
             let status = resp.status().as_u16();
             let mut head_out = format!("HTTP/1.1 {status}\r\n");
@@ -384,6 +388,7 @@ impl HttpLoadBalancer {
                 match std::future::poll_fn(|cx| body.poll_data(cx)).await {
                     Some(Ok(chunk)) => {
                         crate::h2up::write_chunk(client, &chunk).await?;
+                        down_bytes += chunk.len() as u64;
                         let _ = body.flow_control().release_capacity(chunk.len());
                     }
 
@@ -395,6 +400,7 @@ impl HttpLoadBalancer {
                 }
             }
             client.write_all(b"0\r\n\r\n").await?;
+            be.add_bytes(sent as u64, down_bytes);
             tracing::trace!(pool=%this.name, path=%path, backend=%be.addr, "h2 proxied");
             return Ok(());
         }

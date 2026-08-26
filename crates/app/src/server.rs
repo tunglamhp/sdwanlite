@@ -19,6 +19,24 @@ pub struct AppState {
     /// Path labels + policies, persisted atomically to `path-policy.json`.
     pub path_policy: std::sync::Mutex<sdwanlite_core::PathPolicyStore>,
     pub path_policy_path: std::path::PathBuf,
+    /// Per-pool runtime overrides (algorithm, max_conns, drain, hc params).
+    pub pool_overrides: std::sync::Mutex<std::collections::HashMap<String, PoolConfigOverride>>,
+    pub pool_overrides_path: std::path::PathBuf,
+}
+
+/// Persisted per-pool overrides. `hc_*` apply on restart; the rest apply live.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PoolConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_conns: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_interval_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -122,7 +140,7 @@ pub async fn auth_middleware(
 }
 
 pub fn router(state: Arc<AppState>) -> axum::Router {
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/api/status", get(api_status))
         .route("/api/lb", get(api_lb))
@@ -146,6 +164,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         )
         .route("/api/validate", post(api_validate))
         .route("/api/bgp/rib", get(api_rib))
+        .route(
+            "/api/lb/tcp/:name/config",
+            put(api_pool_config_put).get(api_pool_config_get),
+        )
         .route(
             "/api/lb/tcp/:name/backends",
             post(api_add_backend).delete(api_remove_backend),
@@ -342,6 +364,80 @@ async fn api_signals(
         });
     }
 
+    for pool in &state.http_pools {
+        let routes = pool.backends_by_route();
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        let mut pool_rx = 0u64;
+        let mut pool_tx = 0u64;
+        let mut pool_hc = 0u64;
+        let mut bv = Vec::new();
+        let mut unhealthy = 0usize;
+        let mut total = 0usize;
+        for backends in &routes {
+            for b in backends {
+                let key = b.addr.to_string();
+                if !seen.insert(key.clone()) {
+                    continue; // same backend may serve multiple routes
+                }
+                total += 1;
+                if !b.is_healthy() {
+                    unhealthy += 1;
+                }
+                let (p50, p95) = b.latency_percentiles_us();
+                if let Some(x) = p50 {
+                    all_lat.push(x);
+                }
+                pool_rx += b.rx_bytes();
+                pool_tx += b.tx_bytes();
+                pool_hc += b.health_failures();
+                bv.push(SignalBackendView {
+                    addr: key,
+                    healthy: b.is_healthy(),
+                    latency_p50_us: p50,
+                    latency_p95_us: p95,
+                    rx_bytes: b.rx_bytes(),
+                    tx_bytes: b.tx_bytes(),
+                    active_conns: b.active_conns(),
+                    health_failures: b.health_failures(),
+                });
+            }
+        }
+        let active = pool.active_conns();
+        let max = 0usize; // http pools: unlimited by default
+        let loss = if total > 0 {
+            unhealthy as f64 * 100.0 / total as f64
+        } else {
+            0.0
+        };
+        tot_rx += pool_rx;
+        tot_tx += pool_tx;
+        tot_unhealthy += unhealthy;
+        tot_backends += total;
+        tot_hc_fail += pool_hc;
+        tot_rejected += pool.rejected_conns();
+        tot_active += active;
+        pools.push(SignalPoolView {
+            name: pool.name.clone(),
+            latency_p50_us: percentile(&all_lat, 50),
+            latency_p95_us: percentile(&all_lat, 95),
+            rx_bytes: pool_rx,
+            tx_bytes: pool_tx,
+            errors: SignalErrorsView {
+                unhealthy_backends: unhealthy,
+                total_backends: total,
+                loss_pct: (loss * 100.0).round() / 100.0,
+                health_failures: pool_hc,
+                rejected_conns: pool.rejected_conns(),
+            },
+            saturation: SignalSaturationView {
+                active_conns: active,
+                max_conns: max,
+                utilization_pct: 0.0,
+            },
+            backends: bv,
+        });
+    }
+
     let util = if tot_max > 0 {
         tot_active as f64 * 100.0 / tot_max as f64
     } else {
@@ -405,7 +501,16 @@ fn save_path_policy(state: &AppState) -> Result<(), String> {
     std::fs::rename(&tmp, &state.path_policy_path).map_err(|e| e.to_string())
 }
 
-pub fn lock_store(state: &AppState) -> std::sync::MutexGuard<'_, sdwanlite_core::PathPolicyStore> {
+pub fn lock_overrides(
+    state: &AppState,
+) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PoolConfigOverride>> {
+    match state.pool_overrides.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_store(state: &AppState) -> std::sync::MutexGuard<'_, sdwanlite_core::PathPolicyStore> {
     // Recover data even from a poisoned lock: the store is plain JSON state.
     match state.path_policy.lock() {
         Ok(g) => g,
@@ -532,6 +637,116 @@ fn err_json(code: u16, msg: &str) -> axum::response::Response {
         axum::http::HeaderValue::from_static("application/json"),
     );
     rsp
+}
+
+// ---------------------------------------------------------------------------
+// Pool config overrides API
+// ---------------------------------------------------------------------------
+
+pub fn load_pool_overrides(
+    path: &std::path::Path,
+) -> std::collections::HashMap<String, PoolConfigOverride> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_pool_overrides(state: &AppState) -> Result<(), String> {
+    let map = state.pool_overrides.lock().map_err(|_| "poisoned")?;
+    let tmp = state.pool_overrides_path.with_extension("tmp");
+    let json = serde_json::to_vec_pretty(&*map).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &state.pool_overrides_path).map_err(|e| e.to_string())
+}
+
+/// Apply a stored override to a live TCP pool (best effort).
+/// Parse algorithm name (snake_case, matching config serde names).
+pub fn parse_algorithm(s: &str) -> Option<sdwanlite_core::Algorithm> {
+    match s {
+        "round_robin" | "round-robin" => Some(sdwanlite_core::Algorithm::RoundRobin),
+        "least_connections" | "least-connections" => {
+            Some(sdwanlite_core::Algorithm::LeastConnections)
+        }
+        "random" => Some(sdwanlite_core::Algorithm::Random),
+        "failover" => Some(sdwanlite_core::Algorithm::Failover),
+        _ => None,
+    }
+}
+
+pub fn apply_override_live(pool: &sdwanlite_lb::TcpLoadBalancer, o: &PoolConfigOverride) {
+    if let Some(a) = &o.algorithm {
+        if let Some(algo) = parse_algorithm(a) {
+            pool.set_algorithm(algo);
+        }
+    }
+    if let Some(m) = o.max_conns {
+        pool.set_max_conns(m);
+    }
+    if let Some(d) = o.drain {
+        pool.set_drained(d);
+    }
+}
+
+async fn api_pool_config_get(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let map = lock_overrides(&state);
+    match map.get(&name) {
+        Some(o) => axum::Json(o).into_response(),
+        None => err_json(404, &format!("no overrides for pool {name}")),
+    }
+}
+
+async fn api_pool_config_put(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(o): axum::Json<PoolConfigOverride>,
+) -> axum::response::Response {
+    if let Some(a) = &o.algorithm {
+        if parse_algorithm(a).is_none() {
+            return err_json(
+                400,
+                &format!("unknown algorithm {a:?} (round_robin|least_connections|random|failover)"),
+            );
+        }
+    }
+    // apply live where possible
+    if let Some(pool) = state.tcp_pools.iter().find(|p| p.name == name) {
+        apply_override_live(pool, &o);
+    } else if state.tcp_pools.iter().any(|p| p.name == name) {
+        // unreachable; kept for clarity
+    } else if !name.is_empty() && state.tcp_pools.is_empty() {
+        return err_json(404, "no tcp pools running");
+    }
+    let mut map = lock_overrides(&state);
+    let entry = map.entry(name.clone()).or_default();
+    if o.algorithm.is_some() {
+        entry.algorithm = o.algorithm.clone();
+    }
+    if o.max_conns.is_some() {
+        entry.max_conns = o.max_conns;
+    }
+    if o.drain.is_some() {
+        entry.drain = o.drain;
+    }
+    if o.hc_interval_secs.is_some() {
+        entry.hc_interval_secs = o.hc_interval_secs;
+    }
+    if o.hc_timeout_secs.is_some() {
+        entry.hc_timeout_secs = o.hc_timeout_secs;
+    }
+    drop(map);
+    match save_pool_overrides(&state) {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(500, &e),
+    }
 }
 
 async fn api_lb(

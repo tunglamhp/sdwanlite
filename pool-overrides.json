@@ -1,0 +1,6 @@
+{
+  "demo-tcp": {
+    "max_conns": 500,
+    "drain": false
+  }
+}

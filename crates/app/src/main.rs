@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
 
     let alerts = Arc::new(sdwanlite_lb::AlertLog::new(500));
     let pp_path = std::path::PathBuf::from("path-policy.json");
+    let po_path = std::path::PathBuf::from("pool-overrides.json");
     let state = Arc::new(server::AppState {
         config: config.clone(),
         started: Instant::now(),
@@ -85,7 +86,22 @@ async fn main() -> Result<()> {
         alerts,
         path_policy: std::sync::Mutex::new(server::load_path_policy(&pp_path)),
         path_policy_path: pp_path,
+        pool_overrides: std::sync::Mutex::new(server::load_pool_overrides(&po_path)),
+        pool_overrides_path: po_path,
     });
+
+    {
+        let overrides = state
+            .pool_overrides
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for pool in &state.tcp_pools {
+            if let Some(o) = overrides.get(&pool.name) {
+                server::apply_override_live(pool, o);
+                tracing::info!(pool = %pool.name, "applied stored pool override");
+            }
+        }
+    }
 
     for pool in &state.tcp_pools {
         let p = pool.clone();

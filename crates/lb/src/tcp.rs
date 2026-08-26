@@ -2,7 +2,7 @@
 
 use crate::{select_backend, spawn_health_checker, Backend, HealthCheck, StopFlag};
 use sdwanlite_core::{Algorithm, TcpPool};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
@@ -12,11 +12,12 @@ use tokio::sync::RwLock;
 pub struct TcpLoadBalancer {
     pub name: String,
     listener: TcpListener,
-    algo: Algorithm,
+    algo: AtomicU64,
     backends: RwLock<Vec<Arc<Backend>>>,
     counter: AtomicU64,
     stop: Arc<StopFlag>,
     max_conns: AtomicUsize,
+    drained: AtomicBool,
     active_conns: AtomicUsize,
     rejected_conns: AtomicU64,
 }
@@ -32,11 +33,12 @@ impl TcpLoadBalancer {
         let lb = Arc::new(Self {
             name: pool.name.clone(),
             listener,
-            algo: pool.algorithm,
+            algo: AtomicU64::new(algo_disc(pool.algorithm)),
             backends: RwLock::new(backends),
             counter: AtomicU64::new(0),
             stop: Arc::new(StopFlag::default()),
             max_conns: AtomicUsize::new(0), // 0 = unlimited
+            drained: AtomicBool::new(false),
             active_conns: AtomicUsize::new(0),
             rejected_conns: AtomicU64::new(0),
         });
@@ -76,12 +78,25 @@ impl TcpLoadBalancer {
     }
 
     pub fn algorithm(&self) -> Algorithm {
-        self.algo
+        disc_algo(self.algo.load(Ordering::Relaxed))
     }
 
     /// Set the maximum concurrent client connections (0 = unlimited).
     pub fn max_conns(&self) -> usize {
         self.max_conns.load(Ordering::Relaxed)
+    }
+
+    /// Drain mode: refuse new connections; existing ones finish naturally.
+    pub fn set_drained(&self, on: bool) {
+        self.drained.store(on, Ordering::Relaxed);
+    }
+
+    pub fn is_drained(&self) -> bool {
+        self.drained.load(Ordering::Relaxed)
+    }
+
+    pub fn set_algorithm(&self, algo: Algorithm) {
+        self.algo.store(algo_disc(algo), Ordering::Relaxed);
     }
 
     pub fn set_max_conns(&self, max: usize) {
@@ -113,8 +128,11 @@ impl TcpLoadBalancer {
             match self.listener.accept().await {
                 Ok((client, _peer)) => {
                     let max = self.max_conns.load(Ordering::Relaxed);
-                    if max > 0 && self.active_conns.load(Ordering::Relaxed) >= max {
-                        self.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                    let over_max = max > 0 && self.active_conns.load(Ordering::Relaxed) >= max;
+                    if over_max || self.drained.load(Ordering::Relaxed) {
+                        if over_max {
+                            self.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                        }
                         drop(client); // close immediately
                         continue;
                     }
@@ -142,7 +160,7 @@ impl TcpLoadBalancer {
         let snapshot = self.backends.read().await.clone();
         let max_tries = snapshot.len().max(1);
         for _ in 0..max_tries {
-            let Some(be) = select_backend(&snapshot, self.algo, &self.counter) else {
+            let Some(be) = select_backend(&snapshot, self.algorithm(), &self.counter) else {
                 break;
             };
             match be.connect().await {
@@ -166,5 +184,24 @@ impl TcpLoadBalancer {
             std::io::ErrorKind::NotFound,
             "no healthy backends",
         ))
+    }
+}
+
+/// Discriminant helpers for live algorithm swap (AtomicU64 storage).
+fn algo_disc(a: Algorithm) -> u64 {
+    match a {
+        Algorithm::RoundRobin => 0,
+        Algorithm::LeastConnections => 1,
+        Algorithm::Random => 2,
+        Algorithm::Failover => 3,
+    }
+}
+
+fn disc_algo(d: u64) -> Algorithm {
+    match d {
+        0 => Algorithm::RoundRobin,
+        1 => Algorithm::LeastConnections,
+        2 => Algorithm::Random,
+        _ => Algorithm::Failover,
     }
 }
