@@ -1679,6 +1679,10 @@ struct RuleMatch {
     #[serde(default)]
     protocol: Option<String>,
     #[serde(default)]
+    src_prefix: Option<String>,
+    #[serde(default)]
+    dst_prefix: Option<String>,
+    #[serde(default)]
     dst_port: Option<u16>,
 }
 
@@ -1728,6 +1732,8 @@ fn PolicyView() -> Element {
     let mut pf_app = use_signal(String::new);
     let mut pf_proto = use_signal(String::new);
     let mut pf_port = use_signal(String::new);
+    let mut pf_src = use_signal(String::new);
+    let mut pf_dst = use_signal(String::new);
     let mut pf_labels = use_signal(String::new); // comma-separated
     let mut pf_order = use_signal(|| "priority-failover".to_string());
     let mut pf_def_labels = use_signal(String::new);
@@ -1825,8 +1831,11 @@ fn PolicyView() -> Element {
         }
         let app = pf_app.read().trim().to_string();
         let proto = pf_proto.read().trim().to_string();
+        let src = pf_src.read().trim().to_string();
+        let dst = pf_dst.read().trim().to_string();
         let port: Option<u16> = pf_port.read().trim().parse().ok();
-        let has_match = !app.is_empty() || !proto.is_empty() || port.is_some();
+        let has_match =
+            !app.is_empty() || !proto.is_empty() || !src.is_empty() || !dst.is_empty() || port.is_some();
         // client-side validation matching backend: no match-all rule mid-list
         if !has_match {
             pf_error.set("Rule must match at least one of: app, protocol, port (match-all is reserved for the implicit default)".into());
@@ -1860,6 +1869,8 @@ fn PolicyView() -> Element {
                 rule_match: RuleMatch {
                     app: if app.is_empty() { None } else { Some(app) },
                     protocol: if proto.is_empty() { None } else { Some(proto) },
+                    src_prefix: if src.is_empty() { None } else { Some(src) },
+                    dst_prefix: if dst.is_empty() { None } else { Some(dst) },
                     dst_port: port,
                 },
                 action: RouteAction { labels: rule_labels, order: pf_order.read().clone() },
@@ -1881,6 +1892,8 @@ fn PolicyView() -> Element {
                     pf_name.set(String::new());
                     pf_app.set(String::new());
                     pf_proto.set(String::new());
+                    pf_src.set(String::new());
+                    pf_dst.set(String::new());
                     pf_port.set(String::new());
                     pf_labels.set(String::new());
                     if let Ok(r) = gloo_net::http::Request::get("/api/policies").send().await {
@@ -2085,6 +2098,16 @@ fn PolicyView() -> Element {
                             input { r#type: "number", value: "{pf_port}", placeholder: "5060", oninput: move |e| pf_port.set(e.value()) }
                         }
                     }
+                    div { class: "form-row",
+                        div { class: "form-group",
+                            label { "Src prefix (CIDR)" }
+                            input { value: "{pf_src}", placeholder: "10.0.0.0/8", oninput: move |e| pf_src.set(e.value()) }
+                        }
+                        div { class: "form-group",
+                            label { "Dst prefix (CIDR)" }
+                            input { value: "{pf_dst}", placeholder: "192.168.1.0/24", oninput: move |e| pf_dst.set(e.value()) }
+                        }
+                    }
                 }
                 details { class: "advanced", open: "true",
                     summary { "Rule 1 — action" }
@@ -2142,6 +2165,8 @@ fn match_match_desc(m: &RuleMatch) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(a) = &m.app { parts.push(format!("app={a}")); }
     if let Some(p) = &m.protocol { parts.push(format!("proto={p}")); }
+    if let Some(p) = &m.src_prefix { parts.push(format!("src={p}")); }
+    if let Some(p) = &m.dst_prefix { parts.push(format!("dst={p}")); }
     if let Some(p) = m.dst_port { parts.push(format!("port={p}")); }
     if parts.is_empty() { "match-all".into() } else { parts.join(" ") }
 }
