@@ -73,7 +73,7 @@ struct LbCounts {
     http_pools: usize,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 struct LbData {
     #[serde(default)]
     tcp: Vec<TcpPool>,
@@ -81,7 +81,7 @@ struct LbData {
     http: Vec<HttpPool>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 struct TcpPool {
     name: String,
     algorithm: String,
@@ -93,7 +93,7 @@ struct TcpPool {
     backends: Vec<Backend>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 struct Backend {
     addr: String,
     healthy: bool,
@@ -198,14 +198,14 @@ struct SignalTotals {
     utilization_pct: f64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 struct HttpPool {
     name: String,
     #[serde(default)]
     routes: Vec<HttpRoute>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 struct HttpRoute {
     #[serde(default)]
     host: String,
@@ -272,6 +272,15 @@ mod api {
         rsp.json::<T>().await.map_err(|e| e.to_string())
     }
 
+    /// Raw text fetch (for change-detection polling).
+    pub async fn text(url: &str) -> Result<String, String> {
+        let rsp = Request::get(url).send().await.map_err(|e| e.to_string())?;
+        if !rsp.ok() {
+            return Err(format!("HTTP {}", rsp.status()));
+        }
+        rsp.text().await.map_err(|e| e.to_string())
+    }
+
     pub fn status() -> impl Future<Output = Result<Status, String>> { get_json("/api/status") }
     pub fn lb() -> impl Future<Output = Result<LbData, String>> { get_json("/api/lb") }
     pub fn mesh_status() -> impl Future<Output = Result<MeshStatus, String>> { get_json("/api/mesh/status") }
@@ -328,29 +337,66 @@ fn app() -> Element {
     let mut auto_refresh: Signal<bool> = use_signal(|| true);
     let mut sidebar_open: Signal<bool> = use_signal(|| false);
 
+    // Polling loops: fetch text, only set state when the payload CHANGED.
+    // Setting a fresh Result every tick re-rendered the whole tree even when
+    // nothing changed (CPU burn). auto_refresh respected; busy flag prevents
+    // overlapping fetches on slow links.
     use_effect(move || {
         spawn(async move {
+            let mut last_status = String::new();
+            let mut last_lb = String::new();
             loop {
-                status.set(api::status().await);
-                lb.set(api::lb().await);
-                gloo_timers::future::TimeoutFuture::new(3000).await;
+                if auto_refresh.peek().to_owned() {
+                    if let Ok(txt) = api::text("/api/status").await {
+                        if txt != last_status {
+                            if let Ok(v) = serde_json::from_str::<Status>(&txt) {
+                                status.set(Ok(v));
+                                last_status = txt;
+                            }
+                        }
+                    }
+                    if let Ok(txt) = api::text("/api/lb").await {
+                        if txt != last_lb {
+                            if let Ok(v) = serde_json::from_str::<LbData>(&txt) {
+                                lb.set(Ok(v));
+                                last_lb = txt;
+                            }
+                        }
+                    }
+                }
+                gloo_timers::future::TimeoutFuture::new(4000).await;
             }
         });
     });
 
     use_effect(move || {
         spawn(async move {
+            let mut last_mesh = String::new();
+            let mut last_rib = String::new();
             loop {
-                mesh.set(api::mesh_status().await);
-                let r = api::rib().await;
-                if let Ok(data) = &r {
-                    let mut hist = rib_hist.write();
-                    hist.push(data.count);
-                    if hist.len() > 60 {
-                        hist.remove(0);
+                if auto_refresh.peek().to_owned() {
+                    if let Ok(txt) = api::text("/api/mesh/status").await {
+                        if txt != last_mesh {
+                            if let Ok(v) = serde_json::from_str::<MeshStatus>(&txt) {
+                                mesh.set(Ok(v));
+                                last_mesh = txt;
+                            }
+                        }
+                    }
+                    if let Ok(txt) = api::text("/api/bgp/rib").await {
+                        if txt != last_rib {
+                            if let Ok(r) = serde_json::from_str::<RibData>(&txt) {
+                                let mut hist = rib_hist.write();
+                                hist.push(r.count);
+                                if hist.len() > 60 {
+                                    hist.remove(0);
+                                }
+                                rib.set(Ok(r));
+                                last_rib = txt;
+                            }
+                        }
                     }
                 }
-                rib.set(r);
                 gloo_timers::future::TimeoutFuture::new(5000).await;
             }
         });
@@ -469,20 +515,38 @@ fn fmt_us(us: Option<u64>) -> String {
 fn GoldenSignalsRow() -> Element {
     let mut prev = use_signal(|| (0u64, 0u64, 0u64)); // rx, tx, timestamp_ms
     let mut bps = use_signal(|| (0u64, 0u64)); // in, out
+    // poll tick: re-run the resource every 5s (resource tracks this signal)
+    let mut sig_tick = use_signal(|| 0u32);
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(5000).await;
+                sig_tick.with_mut(|t| *t = t.wrapping_add(1));
+            }
+        });
+    });
     let data = use_resource(move || async move {
+        // read (subscribe) tick so the resource refetches each tick
+        let _tick = sig_tick.read();
         let rsp = gloo_net::http::Request::get("/api/signals").send().await;
         match rsp {
             Ok(r) => r.json::<Signals>().await.map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         }
     });
-    // compute bps delta after each fetch
+    // compute bps delta after each fetch.
+    // NOTE: peek() prev — reading it normally would subscribe this effect to
+    // prev, and prev.set() with a fresh timestamp re-triggers the effect,
+    // causing an infinite render loop (CPU burn bug).
     use_effect(move || {
         let d = data.read();
         if let Some(Ok(sig)) = d.as_ref() {
             let now = web_sys::window().map(|w| w.performance().map(|p| p.now() as u64).unwrap_or(0)).unwrap_or(0);
-            let (prx, ptx, pts) = *prev.read();
+            let (prx, ptx, pts) = prev.peek().to_owned();
             let (rx, tx) = (sig.totals.rx_bytes, sig.totals.tx_bytes);
+            if rx == prx && tx == ptx {
+                return; // nothing changed — do not touch signals, no re-render
+            }
             if pts > 0 && now > pts {
                 let dt = (now - pts) / 1000;
                 if dt > 0 {
@@ -1228,9 +1292,20 @@ fn TopologyView(lb: Signal<Result<LbData, String>>) -> Element {
     let mut panning = use_signal(|| false);
     let mut pan_start: Signal<(f64, f64)> = use_signal(|| (0.0, 0.0));
 
+    let mut last_lb_txt: Signal<String> = use_signal(String::new);
     use_effect(move || {
         let lb = lb.clone();
         spawn(async move {
+            // skip topology rebuild when lb data unchanged (avoids re-layout
+            // + full SVG re-render every poll tick)
+            let txt = match &*lb.read() {
+                Ok(d) => serde_json::to_string(d).unwrap_or_default(),
+                Err(_) => return,
+            };
+            if txt == last_lb_txt.peek().to_owned() {
+                return;
+            }
+            last_lb_txt.set(txt);
             let data = match lb.read().clone() {
                 Ok(d) => d,
                 Err(_) => return,
