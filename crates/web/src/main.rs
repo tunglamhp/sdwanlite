@@ -318,7 +318,7 @@ fn kpi_card(label: &'static str, value: String, sub: String) -> Element {
 
 fn app() -> Element {
     let mut tab = use_signal(|| "overview".to_string());
-    let mut theme: Signal<String> = use_signal(|| ls_get("sl-theme").unwrap_or_else(|| "dark".to_string()));
+    let mut theme: Signal<String> = use_signal(|| ls_get("sl-theme").unwrap_or_else(|| "light".to_string()));
 
     let mut status: Signal<Result<Status, String>> = use_signal(|| Err("loading…".into()));
     let mut lb: Signal<Result<LbData, String>> = use_signal(|| Err("loading…".into()));
