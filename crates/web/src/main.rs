@@ -636,12 +636,25 @@ fn MeshView(
                 let hs = p.latest_handshake_secs_ago
                     .map(|s| format!("{}s ago", s))
                     .unwrap_or_else(|| "<span class='pill warn'>never</span>".into());
+                // Network-healing placeholder (flexiWAN-style): stale/never handshake
+                // => tunnel marked healing with pending reason.
+                let healing = match p.latest_handshake_secs_ago {
+                    None => Some("no handshake yet — path probe pending".to_string()),
+                    Some(secs) if secs > 180 => Some(format!("handshake stale {secs}s — reconnecting")),
+                    _ => None,
+                };
+                let healing_html = match &healing {
+                    Some(reason) => format!(
+                        " <span class='pill warn' title='{reason}'>healing</span> <span style='color:var(--muted);font-size:11px'>{reason}</span>"
+                    ),
+                    None => String::new(),
+                };
                 let key_head: String = p.public_key.chars().take(14).collect();
                 rows.push_str(&format!(
-                    "<tr><td class='mono'>{}…</td><td>{}</td><td>{} / {}</td><td>{}</td></tr>",
+                    "<tr><td class='mono'>{}…</td><td>{}</td><td>{} / {}</td><td>{}{}</td></tr>",
                     key_head,
                     p.endpoint.clone().unwrap_or_else(|| "—".into()),
-                    p.rx_bytes, p.tx_bytes, hs
+                    p.rx_bytes, p.tx_bytes, hs, healing_html
                 ));
             }
             if rows.is_empty() {
@@ -890,6 +903,29 @@ fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<
                                 input { r#type: "checkbox", checked: *drain_mode.read(),
                                     oninput: move |e| drain_mode.set(e.checked()) }
                                 "Drain mode (stop accepting new connections)"
+                            }
+                        }
+                        details { class: "advanced",
+                            summary { "Advanced options" }
+                            div { class: "form-row", style: "margin-top:10px",
+                                div { class: "form-group",
+                                    label { "MTU" }
+                                    input { r#type: "number", value: "1500", min: "576", max: "9000" }
+                                }
+                                div { class: "form-group",
+                                    label { "MSS clamp" }
+                                    input { r#type: "number", value: "1460", min: "536", max: "8960" }
+                                }
+                            }
+                            div { class: "form-row",
+                                div { class: "form-group",
+                                    label { "Idle timeout (s)" }
+                                    input { r#type: "number", value: "300" }
+                                }
+                                div { class: "form-group",
+                                    label { "Cost / weight" }
+                                    input { r#type: "number", value: "1", min: "1", max: "100" }
+                                }
                             }
                         }
                     },

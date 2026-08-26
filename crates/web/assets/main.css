@@ -168,3 +168,11 @@ svg.spark { width:100%; height:56px; }
   .grid2 { grid-template-columns:1fr; }
 }
 .sidebar-overlay { position:fixed; inset:0; background:rgba(62,54,46,.35); z-index:40; }
+
+/* ---- Advanced options (collapsed by default) ---- */
+details.advanced { margin-top:12px; border:1px solid var(--border); border-radius:8px;
+  padding:8px 12px; background:var(--bg); }
+details.advanced summary { cursor:pointer; font-size:12px; font-weight:600;
+  color:var(--muted); user-select:none; }
+details.advanced summary:hover { color:var(--primary); }
+details.advanced[open] summary { margin-bottom:6px; color:var(--primary); }
