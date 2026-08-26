@@ -607,8 +607,111 @@ fn rib_points(hist: &[usize]) -> String {
 // Load balancers
 // ---------------------------------------------------------------------------
 
+
+// ---- Deep config modal (flexiWAN-style) ----
+#[derive(Clone, PartialEq)]
+enum ConfigTab { General, HealthCheck, Advanced }
+
+#[component]
+fn PoolConfigModal(pool_name: String, algorithm: String, on_close: EventHandler<()>) -> Element {
+    let mut tab = use_signal(|| ConfigTab::General);
+    let mut hc_interval = use_signal(|| "5".to_string());
+    let mut hc_timeout = use_signal(|| "3".to_string());
+    let mut hc_retries = use_signal(|| "3".to_string());
+    let mut hc_path = use_signal(|| "/health".to_string());
+    let mut conn_timeout = use_signal(|| "30".to_string());
+    let mut max_conns = use_signal(|| "1000".to_string());
+    let mut drain_mode = use_signal(|| false);
+
+    let tab_name = |t: &ConfigTab| match t {
+        ConfigTab::General => "General",
+        ConfigTab::HealthCheck => "Health Check",
+        ConfigTab::Advanced => "Advanced",
+    };
+
+    rsx! {
+        div {
+            class: "modal-overlay",
+            onclick: move |_| on_close(()),
+            div {
+                class: "modal",
+                onclick: move |e| e.stop_propagation(),
+                h3 { "⚙ Configure pool: {pool_name}" }
+                div { class: "tabs",
+                    for t in [ConfigTab::General, ConfigTab::HealthCheck, ConfigTab::Advanced] {
+                        button {
+                            class: if *tab.read() == t { "active" } else { "" },
+                            onclick: move |_| tab.set(t.clone()),
+                            "{tab_name(&t)}"
+                        }
+                    }
+                }
+                match *tab.read() {
+                    ConfigTab::General => rsx! {
+                        div { class: "form-row",
+                            div { class: "form-group",
+                                label { "Algorithm" }
+                                select {
+                                    option { value: "round-robin", selected: algorithm == "round-robin", "Round Robin" }
+                                    option { value: "least-conn", selected: algorithm == "least-conn", "Least Connections" }
+                                    option { value: "source-ip", selected: algorithm == "source-ip", "Source IP Hash" }
+                                }
+                            }
+                            div { class: "form-group",
+                                label { "Max connections" }
+                                input { r#type: "number", value: "{max_conns}", oninput: move |e| max_conns.set(e.value()) }
+                            }
+                        }
+                    },
+                    ConfigTab::HealthCheck => rsx! {
+                        div { class: "form-row",
+                            div { class: "form-group",
+                                label { "Interval (s)" }
+                                input { r#type: "number", value: "{hc_interval}", min: "1", max: "300", oninput: move |e| hc_interval.set(e.value()) }
+                            }
+                            div { class: "form-group",
+                                label { "Timeout (s)" }
+                                input { r#type: "number", value: "{hc_timeout}", min: "1", max: "30", oninput: move |e| hc_timeout.set(e.value()) }
+                            }
+                            div { class: "form-group",
+                                label { "Retries" }
+                                input { r#type: "number", value: "{hc_retries}", min: "1", max: "10", oninput: move |e| hc_retries.set(e.value()) }
+                            }
+                        }
+                        div { class: "form-group",
+                            label { "Health path (HTTP only)" }
+                            input { value: "{hc_path}", placeholder: "/health", oninput: move |e| hc_path.set(e.value()) }
+                        }
+                    },
+                    ConfigTab::Advanced => rsx! {
+                        div { class: "form-row",
+                            div { class: "form-group",
+                                label { "Connection timeout (s)" }
+                                input { r#type: "number", value: "{conn_timeout}", oninput: move |e| conn_timeout.set(e.value()) }
+                            }
+                        }
+                        div { class: "form-group",
+                            label { style: "display:flex;align-items:center;gap:8px;cursor:pointer",
+                                input { r#type: "checkbox", checked: *drain_mode.read(),
+                                    oninput: move |e| drain_mode.set(e.checked()) }
+                                "Drain mode (stop accepting new connections)"
+                            }
+                        }
+                    },
+                }
+                div { class: "modal-actions",
+                    button { class: "btn", onclick: move |_| on_close(()), "Cancel" }
+                    button { class: "btn", style: "background:var(--primary);color:#fff;border-color:var(--primary)",
+                        onclick: move |_| on_close(()), "Apply" }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn LbView(lb: Signal<Result<LbData, String>>) -> Element {
+    let mut config_pool: Signal<Option<String>> = use_signal(|| None);
     let body = match &*lb.read() {
         Ok(data) => {
             let mut tcp_rows = String::new();
@@ -643,8 +746,43 @@ fn LbView(lb: Signal<Result<LbData, String>>) -> Element {
         Err(e) => format!("<div style='color:var(--red)'>{e}</div>"),
     };
 
+    let (pool_names, selected) = {
+        let cfg = config_pool.read();
+        let names: Vec<String> = match &*lb.read() {
+            Ok(d) => d.tcp.iter().map(|p| p.name.clone()).collect(),
+            Err(_) => vec![],
+        };
+        let sel = cfg.as_ref().and_then(|n| {
+            match &*lb.read() {
+                Ok(d) => d.tcp.iter().find(|p| &p.name == n)
+                    .map(|p| (p.name.clone(), p.algorithm.clone())),
+                Err(_) => None,
+            }
+        });
+        (names, sel)
+    };
+
     rsx! {
-        div { dangerous_inner_html: "{body}" }
+        div {
+            if !pool_names.is_empty() {
+                div { class: "actions-bar", style: "margin-bottom:10px",
+                    span { class: "lbl", style: "color:var(--muted);font-size:12px;margin-right:6px", "Deep config:" }
+                    for name in pool_names.clone() {
+                        button { class: "btn", onclick: move |_| config_pool.set(Some(name.clone())),
+                            "⚙ {name}" }
+                    }
+                }
+            }
+            div { dangerous_inner_html: "{body}" }
+            if let Some((pname, algo)) = &selected {
+                PoolConfigModal {
+                    key: "{pname}",
+                    pool_name: pname.clone(),
+                    algorithm: algo.clone(),
+                    on_close: move |_| config_pool.set(None),
+                }
+            }
+        }
     }
 }
 
@@ -891,20 +1029,15 @@ fn TopologyView(lb: Signal<Result<LbData, String>>) -> Element {
 
     rsx! {
         div { class: "topo-toolbar",
-            span { class: "lbl", "Auto layout:" }
-            button { class: "btn", onclick: move |_| topo_apply_layout(&mut nodes, "vertical"), "⬍ Vertical" }
-            button { class: "btn", onclick: move |_| topo_apply_layout(&mut nodes, "horizontal"), "⬌ Horizontal" }
-            button { class: "btn", onclick: move |_| topo_apply_layout(&mut nodes, "radial"), "◎ Radial" }
-            button { class: "btn", onclick: move |_| { zoom.set(1.0); pan_x.set(80.0); pan_y.set(40.0); }, "⤢ Fit view" }
-            button { class: "btn", onclick: move |_| {
-                    ls_set("sl-topo", "{}");
-                    topo_apply_layout(&mut nodes, "horizontal");
-                }, "↺ Reset" }
+            button { class: "btn", title: "Vertical layout", onclick: move |_| topo_apply_layout(&mut nodes, "vertical"), "⬍" }
+            button { class: "btn", title: "Horizontal layout", onclick: move |_| topo_apply_layout(&mut nodes, "horizontal"), "⬌" }
+            button { class: "btn", title: "Radial layout", onclick: move |_| topo_apply_layout(&mut nodes, "radial"), "◎" }
             span { class: "lbl", style: "margin-left:auto",
-                "drag node · wheel = zoom · drag background = pan" }
+                "scroll = zoom · drag bg = pan · dbl-click = reset" }
         }
         svg {
             id: "topo-svg",
+            ondoubleclick: move |_| { zoom.set(1.0); pan_x.set(80.0); pan_y.set(40.0); },
             xmlns: "http://www.w3.org/2000/svg",
             onwheel: move |e| {
                 e.stop_propagation();
@@ -944,6 +1077,7 @@ fn TopologyView(lb: Signal<Result<LbData, String>>) -> Element {
                 }
             },
             g {
+                style: "transition: transform 0.15s ease-out",
                 transform: "translate({pan_x()} {pan_y()}) scale({zoom()})",
                 {edges().iter().map(|e| {
                     let (Some(a), Some(b)) = (
