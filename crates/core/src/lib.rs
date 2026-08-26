@@ -461,3 +461,233 @@ pub fn validate_config(cfg: &Config) -> Vec<String> {
     }
     errors
 }
+
+// ---------------------------------------------------------------------------
+// Path Labels (flexiWAN-style) + Policy Engine (Viptela-style)
+// ---------------------------------------------------------------------------
+
+/// How a set of labeled paths is selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelectionOrder {
+    /// First healthy label wins; failover to the next.
+    PriorityFailover,
+    /// Spread traffic across healthy labeled paths.
+    LoadBalance,
+    /// Prefer paths meeting quality thresholds (loss/latency).
+    QualityBased,
+}
+
+/// A logical label (ISP1, LTE, MPLS, ...) bound to WAN interfaces/tunnels.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PathLabel {
+    pub name: String,
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+    #[serde(default)]
+    pub tunnels: Vec<String>,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// L3/L4/app match for a policy rule.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct RuleMatch {
+    /// Application category (e.g. "video", "voip") — free-form tag.
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub src_prefix: Option<String>,
+    #[serde(default)]
+    pub dst_prefix: Option<String>,
+    #[serde(default)]
+    pub dst_port: Option<u16>,
+}
+
+impl RuleMatch {
+    /// True if this match subsumes the other (used to validate ordering:
+    /// a broader match must not shadow a narrower one before the default).
+    pub fn is_match_all(&self) -> bool {
+        self.app.is_none()
+            && self.protocol.is_none()
+            && self.src_prefix.is_none()
+            && self.dst_prefix.is_none()
+            && self.dst_port.is_none()
+    }
+}
+
+/// Action: route matching traffic via labeled paths in the given order.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RouteAction {
+    pub labels: Vec<String>,
+    pub order: SelectionOrder,
+}
+
+/// One rule inside a policy.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PolicyRule {
+    pub r#match: RuleMatch,
+    pub action: RouteAction,
+}
+
+/// Ordered policy: rules evaluated top-down; implicit default match-all last.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Policy {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub rules: Vec<PolicyRule>,
+    /// Final catch-all action when no rule matches.
+    pub default_action: RouteAction,
+    /// Installed on this device (Viptela-style per-device install).
+    #[serde(default)]
+    pub installed: bool,
+}
+
+impl Policy {
+    /// Evaluate: first matching rule wins, else default action.
+    pub fn evaluate(
+        &self,
+        app: Option<&str>,
+        protocol: Option<&str>,
+        dst_port: Option<u16>,
+    ) -> &RouteAction {
+        for r in &self.rules {
+            let m = &r.r#match;
+            if let Some(a) = &m.app {
+                if Some(a.as_str()) != app {
+                    continue;
+                }
+            }
+            if let Some(pr) = &m.protocol {
+                if Some(pr.as_str()) != protocol {
+                    continue;
+                }
+            }
+            if let Some(p) = m.dst_port {
+                if Some(p) != dst_port {
+                    continue;
+                }
+            }
+            return &r.action;
+        }
+        &self.default_action
+    }
+
+    /// Validate: only the implicit default may be match-all; explicit rules
+    /// must narrow the match.
+    pub fn validate(&self) -> Result<(), String> {
+        for (i, r) in self.rules.iter().enumerate() {
+            if r.r#match.is_match_all() {
+                return Err(format!(
+                    "rule {} is match-all; only the implicit default may match all",
+                    i
+                ));
+            }
+            if r.action.labels.is_empty() {
+                return Err(format!("rule {} routes via no labels", i));
+            }
+        }
+        if self.default_action.labels.is_empty() {
+            return Err("default action routes via no labels".into());
+        }
+        Ok(())
+    }
+}
+
+/// Persisted path-label + policy store (atomic JSON file, 0600).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct PathPolicyStore {
+    #[serde(default)]
+    pub labels: Vec<PathLabel>,
+    #[serde(default)]
+    pub policies: Vec<Policy>,
+}
+
+#[cfg(test)]
+mod path_policy_tests {
+    use super::*;
+
+    fn action(labels: &[&str], order: SelectionOrder) -> RouteAction {
+        RouteAction {
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            order,
+        }
+    }
+
+    fn sample_policy() -> Policy {
+        Policy {
+            name: "voip-priority".into(),
+            description: String::new(),
+            rules: vec![PolicyRule {
+                r#match: RuleMatch {
+                    app: Some("voip".into()),
+                    ..Default::default()
+                },
+                action: action(&["MPLS"], SelectionOrder::PriorityFailover),
+            }],
+            default_action: action(&["ISP1", "LTE"], SelectionOrder::LoadBalance),
+            installed: false,
+        }
+    }
+
+    #[test]
+    fn evaluate_matches_rule_then_default() {
+        let p = sample_policy();
+        assert_eq!(
+            p.evaluate(Some("voip"), None, None).labels,
+            vec!["MPLS".to_string()]
+        );
+        assert_eq!(
+            p.evaluate(Some("video"), None, None).labels,
+            vec!["ISP1".to_string(), "LTE".to_string()]
+        );
+        assert_eq!(p.evaluate(None, None, None), &p.default_action);
+    }
+
+    #[test]
+    fn validate_rejects_match_all_rule_and_empty_labels() {
+        let mut p = sample_policy();
+        assert!(p.validate().is_ok());
+        p.rules.insert(
+            0,
+            PolicyRule {
+                r#match: RuleMatch::default(),
+                action: action(&["X"], SelectionOrder::PriorityFailover),
+            },
+        );
+        assert!(p.validate().is_err());
+        p.rules.remove(0);
+        p.default_action.labels.clear();
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn selection_order_serializes_kebab() {
+        assert_eq!(
+            serde_json::to_string(&SelectionOrder::PriorityFailover).unwrap(),
+            r#""priority-failover""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionOrder::QualityBased).unwrap(),
+            r#""quality-based""#
+        );
+    }
+
+    #[test]
+    fn store_roundtrips() {
+        let mut st = PathPolicyStore::default();
+        st.labels.push(PathLabel {
+            name: "ISP1".into(),
+            interfaces: vec!["wan0".into()],
+            tunnels: vec![],
+            description: "primary fiber".into(),
+        });
+        st.policies.push(sample_policy());
+        let json = serde_json::to_string(&st).unwrap();
+        let back: PathPolicyStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, st);
+    }
+}

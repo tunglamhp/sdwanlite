@@ -1,5 +1,6 @@
 //! REST API + embedded web dashboard for sdwanlite.
 
+use axum::response::IntoResponse;
 use futures_util::StreamExt as _;
 use sdwanlite_bgp::BgpSpeaker;
 use sdwanlite_lb::tcp::TcpLoadBalancer;
@@ -15,6 +16,9 @@ pub struct AppState {
     pub http_pools: Vec<Arc<HttpLoadBalancer>>,
     pub bgp: Option<Arc<BgpSpeaker>>,
     pub alerts: Arc<sdwanlite_lb::AlertLog>,
+    /// Path labels + policies, persisted atomically to `path-policy.json`.
+    pub path_policy: std::sync::Mutex<sdwanlite_core::PathPolicyStore>,
+    pub path_policy_path: std::path::PathBuf,
 }
 
 #[derive(Serialize)]
@@ -123,6 +127,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/status", get(api_status))
         .route("/api/lb", get(api_lb))
         .route("/api/signals", get(api_signals))
+        .route("/api/labels", get(api_labels).put(api_labels_put))
+        .route("/api/policies", get(api_policies).put(api_policies_put))
+        .route("/api/policies/:name/install", post(api_policy_install))
+        .route("/api/policies/:name/uninstall", post(api_policy_uninstall))
         .route("/api/mesh/keypair", get(api_keypair))
         .route("/api/mesh/status", get(api_mesh_status))
         .route("/metrics", get(api_metrics))
@@ -365,6 +373,131 @@ fn percentile(samples: &[u64], q: usize) -> Option<u64> {
     }
     v.sort_unstable();
     Some(v[(v.len() * q).div_ceil(100).max(1) - 1])
+}
+
+// ---------------------------------------------------------------------------
+// Path Labels + Policy Engine API
+// ---------------------------------------------------------------------------
+
+fn save_path_policy(state: &AppState) -> Result<(), String> {
+    let store = state.path_policy.lock().map_err(|_| "store poisoned")?;
+    let tmp = state.path_policy_path.with_extension("tmp");
+    let json = serde_json::to_vec_pretty(&*store).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &state.path_policy_path).map_err(|e| e.to_string())
+}
+
+pub fn lock_store(state: &AppState) -> std::sync::MutexGuard<'_, sdwanlite_core::PathPolicyStore> {
+    // Recover data even from a poisoned lock: the store is plain JSON state.
+    match state.path_policy.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+pub fn load_path_policy(path: &std::path::Path) -> sdwanlite_core::PathPolicyStore {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+async fn api_labels(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let store = lock_store(&state);
+    axum::Json(serde_json::json!({ "labels": store.labels }))
+}
+
+async fn api_labels_put(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(labels): axum::Json<Vec<sdwanlite_core::PathLabel>>,
+) -> axum::response::Response {
+    for l in &labels {
+        if l.name.trim().is_empty() {
+            return err_json(400, "label name must not be empty");
+        }
+    }
+    let mut store = lock_store(&state);
+    store.labels = labels;
+    drop(store);
+    match save_path_policy(&state) {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(500, &e),
+    }
+}
+
+async fn api_policies(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let store = lock_store(&state);
+    axum::Json(serde_json::json!({ "policies": store.policies }))
+}
+
+async fn api_policies_put(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(policies): axum::Json<Vec<sdwanlite_core::Policy>>,
+) -> axum::response::Response {
+    for p in &policies {
+        if let Err(e) = p.validate() {
+            return err_json(400, &format!("policy {}: {}", p.name, e));
+        }
+    }
+    let mut store = lock_store(&state);
+    store.policies = policies;
+    drop(store);
+    match save_path_policy(&state) {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_json(500, &e),
+    }
+}
+
+async fn api_policy_install(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    set_policy_installed(&state, &name, true)
+}
+
+async fn api_policy_uninstall(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    set_policy_installed(&state, &name, false)
+}
+
+fn set_policy_installed(state: &AppState, name: &str, installed: bool) -> axum::response::Response {
+    let mut store = match state.path_policy.lock() {
+        Ok(s) => s,
+        Err(_) => return err_json(500, "store poisoned"),
+    };
+    match store.policies.iter_mut().find(|p| p.name == name) {
+        Some(p) => p.installed = installed,
+        None => return err_json(404, &format!("policy {name} not found")),
+    }
+    drop(store);
+    match save_path_policy(state) {
+        Ok(()) => {
+            axum::Json(serde_json::json!({ "ok": true, "installed": installed })).into_response()
+        }
+        Err(e) => err_json(500, &e),
+    }
+}
+
+fn err_json(code: u16, msg: &str) -> axum::response::Response {
+    let mut rsp = axum::response::Response::new(axum::body::Body::from(msg.to_string()));
+    *rsp.status_mut() = axum::http::StatusCode::from_u16(code)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    rsp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    rsp
 }
 
 async fn api_lb(

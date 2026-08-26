@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
     };
 
     let alerts = Arc::new(sdwanlite_lb::AlertLog::new(500));
+    let pp_path = std::path::PathBuf::from("path-policy.json");
     let state = Arc::new(server::AppState {
         config: config.clone(),
         started: Instant::now(),
@@ -82,6 +83,8 @@ async fn main() -> Result<()> {
         http_pools,
         bgp,
         alerts,
+        path_policy: std::sync::Mutex::new(server::load_path_policy(&pp_path)),
+        path_policy_path: pp_path,
     });
 
     for pool in &state.tcp_pools {

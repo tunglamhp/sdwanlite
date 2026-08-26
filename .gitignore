@@ -4,3 +4,4 @@ demo_root.html
 *.zip
 *.zip
 web-dist/
+path-policy.json
