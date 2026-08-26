@@ -1,14 +1,14 @@
 //! HTTP/1.1 reverse proxy with host/path routing and optional TLS termination.
 
-use crate::{select_backend, spawn_health_checker, Backend, HealthCheck, Conn, StopFlag};
+use crate::{select_backend, spawn_health_checker, Backend, Conn, HealthCheck, StopFlag};
 use sdwanlite_core::{Algorithm, HttpPool};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 
 struct Route {
     host: String,
@@ -34,10 +34,12 @@ impl HttpLoadBalancer {
     pub async fn bind(pool: &HttpPool) -> std::io::Result<Arc<Self>> {
         let listener = TcpListener::bind(&pool.listen).await?;
         let tls = match &pool.tls {
-            Some(t) => Some(tokio_rustls::TlsAcceptor::from(crate::load_tls_server_config(
-                std::path::Path::new(&t.cert_file),
-                std::path::Path::new(&t.key_file),
-            )?)),
+            Some(t) => Some(tokio_rustls::TlsAcceptor::from(
+                crate::load_tls_server_config(
+                    std::path::Path::new(&t.cert_file),
+                    std::path::Path::new(&t.key_file),
+                )?,
+            )),
             None => None,
         };
         let routes: Vec<Arc<Route>> = pool
@@ -62,9 +64,7 @@ impl HttpLoadBalancer {
                 r.backends.clone(),
                 Duration::from_secs(pool.health_interval_secs.max(1)),
                 Duration::from_secs(pool.health_timeout_secs),
-                HealthCheck::from_path(
-                    pool.health_check_path.as_ref().or(Some(&"/".to_string())),
-                ),
+                HealthCheck::from_path(pool.health_check_path.as_ref().or(Some(&"/".to_string()))),
             );
         }
         let lb = Arc::new(Self {
@@ -118,10 +118,7 @@ impl HttpLoadBalancer {
     }
 
     /// Rebuild the TLS acceptor from disk without dropping the listener.
-    pub async fn reload_tls(
-        &self,
-        tls_cfg: &sdwanlite_core::TlsConfig,
-    ) -> std::io::Result<()> {
+    pub async fn reload_tls(&self, tls_cfg: &sdwanlite_core::TlsConfig) -> std::io::Result<()> {
         let acceptor = tokio_rustls::TlsAcceptor::from(crate::load_tls_server_config(
             std::path::Path::new(&tls_cfg.cert_file),
             std::path::Path::new(&tls_cfg.key_file),
@@ -180,11 +177,7 @@ impl HttpLoadBalancer {
         }
     }
 
-    async fn handle(
-        self: Arc<Self>,
-        mut client: Conn,
-        peer_ip: IpAddr,
-    ) -> std::io::Result<()> {
+    async fn handle(self: Arc<Self>, mut client: Conn, peer_ip: IpAddr) -> std::io::Result<()> {
         // Read until end of request head (bounded).
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
         let mut tmp = [0u8; 4096];
@@ -222,7 +215,7 @@ impl HttpLoadBalancer {
 
         // ---- HTTP/2 upstream branch (buffered-body bridging) ----
         if self.proto == sdwanlite_core::BackendProto::H2 {
-            return Self::h2_bridge(&self,&mut client, &buf, head_end, route, &path, peer_ip)
+            return Self::h2_bridge(&self, &mut client, &buf, head_end, route, &path, peer_ip)
                 .await;
         }
 
@@ -303,15 +296,14 @@ impl HttpLoadBalancer {
                 }
             };
             let has_body = content_len.map(|l| l > 0).unwrap_or(true);
-            let (response_fut, mut send_stream) =
-                match session.begin(&head, has_body) {
-                    Ok(x) => x,
-                    Err(e) => {
-                        tracing::debug!(backend=%be.addr, error=%e, "h2 begin failed");
-                        be.set_healthy(false);
-                        continue;
-                    }
-                };
+            let (response_fut, mut send_stream) = match session.begin(&head, has_body) {
+                Ok(x) => x,
+                Err(e) => {
+                    tracing::debug!(backend=%be.addr, error=%e, "h2 begin failed");
+                    be.set_healthy(false);
+                    continue;
+                }
+            };
 
             // ---- client -> backend: stream buffered prefix + remainder ----
             let mut buffered = buf[head_end..].to_vec();
@@ -370,23 +362,20 @@ impl HttpLoadBalancer {
 
             let status = resp.status().as_u16();
             let mut head_out = format!("HTTP/1.1 {status}\r\n");
-            let mut skip_te = false;
             for (n, v) in resp.headers() {
-                if n == http::header::TRANSFER_ENCODING {
-                    skip_te = true;
+                if n == http::header::TRANSFER_ENCODING
+                    || n == http::header::CONTENT_LENGTH
+                    || n == http::header::CONNECTION
+                {
                     continue;
                 }
-                if n == http::header::CONTENT_LENGTH {
-                    continue; // we will use chunked
-                }
-                if n == http::header::CONNECTION {
-                    continue;
-                }
-                head_out.push_str(&format!("{}: {}\r\n", n.as_str(), String::from_utf8_lossy(v.as_bytes())));
+                head_out.push_str(&format!(
+                    "{}: {}\r\n",
+                    n.as_str(),
+                    String::from_utf8_lossy(v.as_bytes())
+                ));
             }
-            if skip_te || true {
-                head_out.push_str("Transfer-Encoding: chunked\r\n");
-            }
+            head_out.push_str("Transfer-Encoding: chunked\r\n");
             head_out.push_str("Connection: close\r\n\r\n");
             client.write_all(head_out.as_bytes()).await?;
 

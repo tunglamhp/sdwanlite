@@ -1,10 +1,10 @@
 //! Integration-style tests for TLS termination and connection limits.
 
+use futures_core::Stream as _;
+use sdwanlite_core::{Algorithm, HttpPool, HttpRoute, TcpPool, TlsConfig};
 use sdwanlite_lb::tcp::TcpLoadBalancer;
 use sdwanlite_lb::HttpLoadBalancer;
-use sdwanlite_core::{Algorithm, HttpPool, HttpRoute, TcpPool, TlsConfig};
 use std::sync::Arc;
-use futures_core::Stream as _;
 
 fn gen_self_signed(dir: &std::path::Path) -> (String, String) {
     // Use rcgen to mint a self-signed cert/key pair.
@@ -85,9 +85,7 @@ async fn tls_handshake_through_http_lb() {
     let local = lb.local_addr().unwrap();
 
     // TLS client
-    let client_cfg = rustls_client_root(
-        &std::fs::read_to_string(&cert).unwrap(),
-    );
+    let client_cfg = rustls_client_root(&std::fs::read_to_string(&cert).unwrap());
     let connector = tokio_rustls::TlsConnector::from(client_cfg);
     let sock = tokio::net::TcpStream::connect(local).await.unwrap();
     let mut tls = connector
@@ -103,9 +101,13 @@ async fn tls_handshake_through_http_lb() {
     let mut got = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
-        assert!(std::time::Instant::now() < deadline, "timeout waiting for response");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for response"
+        );
         let mut buf = vec![0u8; 256];
-        match tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut buf)).await {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut buf)).await
+        {
             Err(_) => continue,
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Ok(Err(e)) => panic!("read error: {e}"),
@@ -127,11 +129,15 @@ async fn tcp_conn_limit_rejects() {
     let baddr = bl.local_addr().unwrap().to_string();
     tokio::spawn(async move {
         loop {
-            let Ok((mut s, _)) = bl.accept().await else { break };
+            let Ok((mut s, _)) = bl.accept().await else {
+                break;
+            };
             tokio::spawn(async move {
                 let mut buf = [0u8; 64];
                 while let Ok(n) = s.read(&mut buf).await {
-                    if n == 0 { break }
+                    if n == 0 {
+                        break;
+                    }
                     s.write_all(&buf[..n]).await.ok();
                 }
             });
@@ -159,7 +165,9 @@ async fn tcp_conn_limit_rejects() {
     let c1 = tokio::net::TcpStream::connect(local).await.unwrap();
     // wait until the accept loop registers the connection
     for _ in 0..50 {
-        if lb.active_conns() == 1 { break }
+        if lb.active_conns() == 1 {
+            break;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert_eq!(lb.active_conns(), 1);
@@ -167,7 +175,9 @@ async fn tcp_conn_limit_rejects() {
     // second conn should be rejected (closed immediately by the LB)
     let c2 = tokio::net::TcpStream::connect(local).await.unwrap();
     for _ in 0..50 {
-        if lb.rejected_conns() == 1 { break }
+        if lb.rejected_conns() == 1 {
+            break;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert_eq!(lb.rejected_conns(), 1);
@@ -204,10 +214,7 @@ async fn h2_upstream_roundtrip() {
                     let path = req.uri().path().to_string();
                     tokio::spawn(async move {
                         let body = format!("hello-h2 {path}");
-                        let resp = http::Response::builder()
-                            .status(200)
-                            .body(())
-                            .unwrap();
+                        let resp = http::Response::builder().status(200).body(()).unwrap();
                         if let Ok(mut tx) = respond.send_response(resp, false) {
                             let _ = tx.send_data(body.into_bytes().into(), true);
                         }
@@ -241,9 +248,11 @@ async fn h2_upstream_roundtrip() {
     // plain HTTP/1.1 client -> LB -> h2 backend
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut c = tokio::net::TcpStream::connect(local).await.unwrap();
-    c.write_all(b"GET /world HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .await
-        .unwrap();
+    c.write_all(
+        b"GET /world HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await
+    .unwrap();
     let mut got = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -322,7 +331,10 @@ async fn websocket_upgrade_passes_through_http_pool() {
     let mut got = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !got.windows(4).any(|w| w == b"\r\n\r\n") {
-        assert!(std::time::Instant::now() < deadline, "timeout waiting for 101");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for 101"
+        );
         let mut b = [0u8; 512];
         let n = tokio::time::timeout(std::time::Duration::from_millis(500), c.read(&mut b))
             .await

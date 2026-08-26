@@ -3,7 +3,6 @@
 pub mod http;
 pub use http::HttpLoadBalancer;
 
-
 mod h2up;
 pub mod tls;
 pub use tls::load_tls_server_config;
@@ -75,8 +74,8 @@ pub mod tcp;
 
 use sdwanlite_core::Algorithm;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -130,8 +129,12 @@ impl Backend {
 
     pub(crate) fn add_bytes(&self, up: u64, down: u64) {
         // "up" = client->backend, "down" = backend->client
-        if up > 0 { self.tx_bytes.fetch_add(up, Ordering::Relaxed); }
-        if down > 0 { self.rx_bytes.fetch_add(down, Ordering::Relaxed); }
+        if up > 0 {
+            self.tx_bytes.fetch_add(up, Ordering::Relaxed);
+        }
+        if down > 0 {
+            self.rx_bytes.fetch_add(down, Ordering::Relaxed);
+        }
     }
 
     async fn connect(&self) -> std::io::Result<TcpStream> {
@@ -225,7 +228,10 @@ async fn probe(be: &Backend, mode: &HealthCheck, timeout: Duration) -> bool {
             }
         }
     };
-    tokio::time::timeout(timeout, attempt).await.unwrap_or(Ok(false)).unwrap_or(false)
+    tokio::time::timeout(timeout, attempt)
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false)
 }
 
 /// Spawn a periodic health checker for the given backends.
@@ -292,7 +298,10 @@ pub struct AlertLog {
 
 impl AlertLog {
     pub fn new(max: usize) -> Self {
-        Self { events: Mutex::new(Vec::new()), max }
+        Self {
+            events: Mutex::new(Vec::new()),
+            max,
+        }
     }
 
     pub fn push(&self, severity: &str, source: &str, message: &str) {

@@ -12,10 +12,7 @@ use instant_acme::{BytesResponse, Error, HttpClient};
 use std::future::Future;
 use std::pin::Pin;
 
-type HyperClient = hyper_util::client::legacy::Client<
-    HttpsConnector<HttpConnector>,
-    Full<Bytes>,
->;
+type HyperClient = hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// Delegating client that marks every DNS identifier in a new-order payload
 /// as a wildcard when `all_wildcards` is set.
@@ -35,7 +32,10 @@ impl WildcardHttpClient {
                 .enable_http2()
                 .build(),
         );
-        Ok(Self { inner, all_wildcards })
+        Ok(Self {
+            inner,
+            all_wildcards,
+        })
     }
 }
 
@@ -66,15 +66,13 @@ impl HttpClient for WildcardHttpClient {
                         }
                     }
                     let payload = if changed {
-                        serde_json::to_vec(&json)
-                            .map_err(|e| Error::Other(Box::new(e)))?
+                        serde_json::to_vec(&json).map_err(|e| Error::Other(Box::new(e)))?
                     } else {
                         data.to_vec()
                     };
-                    parts.headers.insert(
-                        http::header::CONTENT_LENGTH,
-                        payload.len().into(),
-                    );
+                    parts
+                        .headers
+                        .insert(http::header::CONTENT_LENGTH, payload.len().into());
                     req = Request::from_parts(parts, Full::new(Bytes::from(payload)));
                 } else {
                     // not JSON: rebuild unchanged

@@ -92,11 +92,15 @@ impl Prefix {
     pub fn parse(s: &str) -> Option<Self> {
         let (ip, bits) = s.split_once('/')?;
         let ip: std::net::Ipv4Addr = ip.parse().ok()?;
-        Some(Self { bits: bits.parse().ok()?, octets: ip.octets() })
+        Some(Self {
+            bits: bits.parse().ok()?,
+            octets: ip.octets(),
+        })
     }
 
     fn encode(&self) -> Vec<u8> {
         let mut out = vec![self.bits];
+        #[allow(clippy::manual_div_ceil)]
         let bytes = ((self.bits as usize) + 7) / 8;
         out.extend_from_slice(&self.octets[..bytes]);
         out
@@ -156,7 +160,9 @@ pub struct RibEntry {
 impl RibEntry {
     /// Best = highest LOCAL_PREF, then shortest AS_PATH.
     pub fn best(&self) -> Option<&Route> {
-        self.routes.iter().min_by_key(|r| (std::cmp::Reverse(r.local_pref), r.as_path_len))
+        self.routes
+            .iter()
+            .min_by_key(|r| (std::cmp::Reverse(r.local_pref), r.as_path_len))
     }
     pub fn best_len(&self) -> u32 {
         self.best().map(|r| r.as_path_len).unwrap_or(u32::MAX)
@@ -236,9 +242,17 @@ impl BgpSpeaker {
         }
     }
 
-    async fn run_session(self: Arc<Self>, neighbor: String, mut sock: TcpStream) -> std::io::Result<()> {
+    async fn run_session(
+        self: Arc<Self>,
+        neighbor: String,
+        mut sock: TcpStream,
+    ) -> std::io::Result<()> {
         let local_as = self.cfg.local_as;
-        let as16 = if local_as > 0xFFFF { AS_TRANS } else { local_as as u16 };
+        let as16 = if local_as > 0xFFFF {
+            AS_TRANS
+        } else {
+            local_as as u16
+        };
         let router_id: u32 = self
             .cfg
             .router_id
@@ -298,16 +312,25 @@ impl BgpSpeaker {
 
         // register reflection channel and hand the write half to a drain task
         let (refl_tx, refl_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        self.reflect_tx.write().await.insert(neighbor.clone(), refl_tx);
+        self.reflect_tx
+            .write()
+            .await
+            .insert(neighbor.clone(), refl_tx);
         let negotiated_hold = {
             let s = self.sessions.read().await;
-            s.get(&neighbor).map(|i| i.negotiated_hold_secs).unwrap_or(want_hold)
+            s.get(&neighbor)
+                .map(|i| i.negotiated_hold_secs)
+                .unwrap_or(want_hold)
         };
         info!(neighbor = %neighbor, remote_as = ?effective_remote_as, hold = negotiated_hold, "session established");
 
         // advertise configured networks, filtered by this neighbor's export policy
-        let all_networks: Vec<Prefix> =
-            self.cfg.networks.iter().filter_map(|s| Prefix::parse(s)).collect();
+        let all_networks: Vec<Prefix> = self
+            .cfg
+            .networks
+            .iter()
+            .filter_map(|s| Prefix::parse(s))
+            .collect();
         let export: Option<&Vec<String>> = self
             .cfg
             .neighbors
@@ -397,7 +420,7 @@ impl BgpSpeaker {
                                                 .collect();
                                         for tx in targets {
                                             let _ = tx.send(encode_update_ext(
-                                                &[p.clone()],
+                                                std::slice::from_ref(&p),
                                                 &[],
                                                 router_id,
                                                 local_as,
@@ -497,12 +520,18 @@ async fn read_message<R: tokio::io::AsyncRead + Unpin>(
                 return Ok(RawMessage { msg_type, body });
             }
             if len < 19 {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad BGP length"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bad BGP length",
+                ));
             }
         }
         let n = sock.read(tmp).await?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "closed",
+            ));
         }
         buf.extend_from_slice(&tmp[..n]);
     }
@@ -656,7 +685,7 @@ fn parse_prefixes(buf: &[u8]) -> Vec<Prefix> {
     let mut pos = 0usize;
     while pos < buf.len() {
         let bits = buf[pos];
-        let bytes = ((bits as usize) + 7) / 8;
+        let bytes = (bits as usize).div_ceil(8);
         if bytes > 4 || pos + 1 + bytes > buf.len() {
             break; // malformed tail; stop conservatively
         }
@@ -789,8 +818,16 @@ mod policy_tests {
     fn local_pref_beats_shorter_path() {
         let entry = RibEntry {
             routes: vec![
-                Route { neighbor: "a".into(), as_path_len: 1, local_pref: 50 },
-                Route { neighbor: "b".into(), as_path_len: 5, local_pref: 200 },
+                Route {
+                    neighbor: "a".into(),
+                    as_path_len: 1,
+                    local_pref: 50,
+                },
+                Route {
+                    neighbor: "b".into(),
+                    as_path_len: 5,
+                    local_pref: 200,
+                },
             ],
         };
         assert_eq!(entry.best().unwrap().neighbor, "b");
@@ -800,8 +837,16 @@ mod policy_tests {
     fn equal_pref_shortest_path_wins() {
         let entry = RibEntry {
             routes: vec![
-                Route { neighbor: "long".into(), as_path_len: 7, local_pref: 100 },
-                Route { neighbor: "short".into(), as_path_len: 2, local_pref: 100 },
+                Route {
+                    neighbor: "long".into(),
+                    as_path_len: 7,
+                    local_pref: 100,
+                },
+                Route {
+                    neighbor: "short".into(),
+                    as_path_len: 2,
+                    local_pref: 100,
+                },
             ],
         };
         assert_eq!(entry.best().unwrap().neighbor, "short");

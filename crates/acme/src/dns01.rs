@@ -34,22 +34,12 @@ pub fn zone_apex(domain: &str) -> String {
 #[allow(dead_code)]
 const CF_API: &str = "https://api.cloudflare.com/client/v4";
 
-fn client(token: &str) -> Result<reqwest::Client, AcmeError> {
+fn client(_token: &str) -> Result<reqwest::Client, AcmeError> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| AcmeError::Protocol(format!("http client: {e}")))
-        .map(|c| {
-            c
-        })
-        .map(|c| {
-            // attach auth per-request instead; return plain client
-            c
-        })
-        .map(|c| {
-            let _ = token;
-            c
-        })
+
 }
 
 async fn cf_request(
@@ -65,10 +55,15 @@ async fn cf_request(
             .json(&json),
         None => client(token)?.request(method, url).bearer_auth(token),
     };
-    let rsp = http.send().await.map_err(|e| AcmeError::Protocol(e.to_string()))?;
+    let rsp = http
+        .send()
+        .await
+        .map_err(|e| AcmeError::Protocol(e.to_string()))?;
     let status = rsp.status();
-    let json: serde_json::Value =
-        rsp.json().await.map_err(|e| AcmeError::Protocol(e.to_string()))?;
+    let json: serde_json::Value = rsp
+        .json()
+        .await
+        .map_err(|e| AcmeError::Protocol(e.to_string()))?;
     if !status.is_success() || json["success"].as_bool() != Some(true) {
         return Err(AcmeError::Protocol(format!(
             "cloudflare api error ({status}): {}",

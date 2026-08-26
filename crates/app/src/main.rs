@@ -12,8 +12,7 @@ use std::time::Instant;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -36,15 +35,19 @@ async fn main() -> Result<()> {
     // Load balancers
     let mut tcp_pools = Vec::new();
     for pool in &config.lb.tcp_pools {
-        tcp_pools.push(sdwanlite_lb::tcp::TcpLoadBalancer::bind(pool)
-            .await
-            .with_context(|| format!("binding tcp pool '{}'", pool.name))?);
+        tcp_pools.push(
+            sdwanlite_lb::tcp::TcpLoadBalancer::bind(pool)
+                .await
+                .with_context(|| format!("binding tcp pool '{}'", pool.name))?,
+        );
     }
     let mut http_pools = Vec::new();
     for pool in &config.lb.http_pools {
-        http_pools.push(sdwanlite_lb::HttpLoadBalancer::bind(pool)
-            .await
-            .with_context(|| format!("binding http pool '{}'", pool.name))?);
+        http_pools.push(
+            sdwanlite_lb::HttpLoadBalancer::bind(pool)
+                .await
+                .with_context(|| format!("binding http pool '{}'", pool.name))?,
+        );
     }
 
     // BGP
@@ -130,4 +133,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-

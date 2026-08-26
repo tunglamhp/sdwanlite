@@ -59,6 +59,19 @@ verified end-to-end on any OS, no kernel WG or `wg` tools required.
 cargo test -p sdwanlite-mesh --features vpn-forwarding   # includes E2E tunnel test
 ```
 
+## 5. Security (REQUIRED for production)
+
+```bash
+# Generate tokens
+export SDWANLITE_AUTH_USER=admin
+export SDWANLITE_AUTH_PASS=$(openssl rand -hex 16)
+export SDWANLITE_API_TOKEN=$(openssl rand -hex 32)
+```
+
+- `SDWANLITE_AUTH_USER` + `SDWANLITE_AUTH_PASS`: HTTP Basic Auth for dashboard
+- `SDWANLITE_API_TOKEN`: overrides `api_token` in config (bearer token for API mutations)
+- **NEVER commit real tokens to git.** Use env vars or a secrets manager.
+
 ## Hardening checklist
 
 - Set `general.api_token` before exposing the API beyond loopback.

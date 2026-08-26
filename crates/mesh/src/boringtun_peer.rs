@@ -45,17 +45,21 @@ impl Peer {
         );
         let tunn = Tunn::new(secret, public, None, Some(1), index << 8, None);
         let sock = Arc::new(UdpSocket::bind(("0.0.0.0", bind_port)).await?);
-        Ok(Self { idx: index, tunn, sock, endpoint })
+        Ok(Self {
+            idx: index,
+            tunn,
+            sock,
+            endpoint,
+        })
     }
 
     /// Send one handshake initiation (or retry).
     pub(crate) async fn kick(&mut self) -> std::io::Result<()> {
         let mut dst = vec![0u8; 148];
-        match self.tunn.format_handshake_initiation(&mut dst, false) {
-            boringtun::noise::TunnResult::WriteToNetwork(packet) => {
-                self.sock.send_to(packet, self.endpoint).await?;
-            }
-            _ => {}
+        if let boringtun::noise::TunnResult::WriteToNetwork(packet) =
+            self.tunn.format_handshake_initiation(&mut dst, false)
+        {
+            self.sock.send_to(packet, self.endpoint).await?;
         }
         Ok(())
     }
@@ -117,7 +121,10 @@ pub async fn handshake_smoke(
         a.pump().await?;
         b.pump().await?;
 
-        if let Some(d) = a.time_since_handshake().or_else(|| b.time_since_handshake()) {
+        if let Some(d) = a
+            .time_since_handshake()
+            .or_else(|| b.time_since_handshake())
+        {
             tracing::info!(elapsed = ?d, "boringtun handshake established");
             return Ok(d);
         }
@@ -129,9 +136,9 @@ pub async fn handshake_smoke(
     }
     Err(MeshError::Io(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        "boringtun handshake timed out")))
+        "boringtun handshake timed out",
+    )))
 }
-
 
 #[cfg(test)]
 mod isolate {

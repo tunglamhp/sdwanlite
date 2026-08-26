@@ -1,7 +1,7 @@
 //! Certificate issuance over ACME with the HTTP-01 challenge.
 
 use crate::error::AcmeError;
-use instant_acme::{Account, Identifier, NewAccount, NewOrder, ChallengeType, OrderStatus};
+use instant_acme::{Account, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus};
 use sdwanlite_core::Acme;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +25,9 @@ impl ChallengeServer {
         tracing::info!(port, "acme http-01 challenge server up");
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
                 let answers = answers.clone();
                 tokio::spawn(async move {
                     // read request head (bounded)
@@ -84,9 +86,8 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
     // persist them next to the key file. Avoids LE account rate limits.
     let creds_path = format!("{}.account.json", cfg.key_file);
     let any_wildcard = cfg.domains.iter().any(|d| d.starts_with("*."));
-    let http: Box<dyn instant_acme::HttpClient> = Box::new(
-        crate::WildcardHttpClient::try_new(any_wildcard).expect("wildcard client"),
-    );
+    let http: Box<dyn instant_acme::HttpClient> =
+        Box::new(crate::WildcardHttpClient::try_new(any_wildcard).expect("wildcard client"));
     let (account, creds_json) = match tokio::fs::read_to_string(&creds_path).await {
         Ok(raw) => match serde_json::from_str::<instant_acme::AccountCredentials>(&raw) {
             Ok(creds) => match Account::from_credentials(creds).await {
@@ -120,7 +121,11 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
         .iter()
         .map(|d| Identifier::Dns(d.trim_start_matches("*.").to_string()))
         .collect();
-    let mut order = account.new_order(&NewOrder { identifiers: &identifiers }).await?;
+    let mut order = account
+        .new_order(&NewOrder {
+            identifiers: &identifiers,
+        })
+        .await?;
 
     // collect challenges: HTTP-01 (serve locally) or DNS-01 (Cloudflare TXT)
     let authorizations = order.authorizations().await?;
@@ -130,7 +135,11 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
     for auth in &authorizations {
         let Identifier::Dns(domain) = &auth.identifier;
         for ch in &auth.challenges {
-            let want = if cfg.dns01 { ChallengeType::Dns01 } else { ChallengeType::Http01 };
+            let want = if cfg.dns01 {
+                ChallengeType::Dns01
+            } else {
+                ChallengeType::Http01
+            };
             if ch.r#type != want {
                 continue;
             }
@@ -138,10 +147,14 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
             let key_auth = order.key_authorization(ch).as_str().to_string();
             if cfg.dns01 {
                 let Some(token) = &cfg.cloudflare_api_token else {
-                    return Err(AcmeError::Protocol("dns01 requires cloudflare_api_token".into()));
+                    return Err(AcmeError::Protocol(
+                        "dns01 requires cloudflare_api_token".into(),
+                    ));
                 };
                 if token.is_empty() {
-                    return Err(AcmeError::Protocol("dns01 cloudflare_api_token is empty".into()));
+                    return Err(AcmeError::Protocol(
+                        "dns01 cloudflare_api_token is empty".into(),
+                    ));
                 }
                 tracing::info!(domain=%domain, "creating _acme-challenge TXT record");
                 let id = crate::cloudflare_txt_create(
@@ -149,7 +162,8 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
                     domain,
                     &crate::txt_record_name(domain),
                     &crate::txt_value(&key_auth),
-                ).await?;
+                )
+                .await?;
                 created_records.push((domain.clone(), id));
             } else {
                 answers.insert(ch.token.clone(), key_auth);
@@ -179,7 +193,8 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
                         let domain = domain.clone();
                         let id = id.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = crate::cloudflare_txt_delete(&token, &domain, &id).await {
+                            if let Err(e) = crate::cloudflare_txt_delete(&token, &domain, &id).await
+                            {
                                 tracing::warn!("failed to delete TXT record {id}: {e}");
                             }
                         });
@@ -188,7 +203,7 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
             }
         }
     }
-    let _cleanup_dns = CleanupDns(&cfg, &created_records);
+    let _cleanup_dns = CleanupDns(cfg, &created_records);
     for url in &challenge_urls {
         order.set_challenge_ready(url).await?;
     }
@@ -201,12 +216,16 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
             OrderStatus::Ready | OrderStatus::Valid => break,
             OrderStatus::Pending => {}
             ref s => {
-                if let Some(srv) = &server { srv.shutdown(); }
+                if let Some(srv) = &server {
+                    srv.shutdown();
+                }
                 return Err(AcmeError::Protocol(format!("order entered state {s:?}")));
             }
         }
         if tokio::time::Instant::now() > deadline {
-            if let Some(srv) = &server { srv.shutdown(); }
+            if let Some(srv) = &server {
+                srv.shutdown();
+            }
             return Err(AcmeError::Timeout);
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -231,7 +250,9 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
             Some(p) => break p,
             None => {
                 if tokio::time::Instant::now() > deadline {
-                    if let Some(srv) = &server { srv.shutdown(); }
+                    if let Some(srv) = &server {
+                        srv.shutdown();
+                    }
                     return Err(AcmeError::Timeout);
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -239,7 +260,9 @@ pub async fn obtain_certificate(cfg: &Acme) -> Result<(String, String), AcmeErro
         }
     };
 
-    if let Some(srv) = &server { srv.shutdown(); }
+    if let Some(srv) = &server {
+        srv.shutdown();
+    }
     Ok((pem, key.serialize_pem()))
 }
 

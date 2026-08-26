@@ -4,10 +4,10 @@ use crate::{select_backend, spawn_health_checker, Backend, HealthCheck, StopFlag
 use sdwanlite_core::{Algorithm, TcpPool};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::Duration;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 
 pub struct TcpLoadBalancer {
     pub name: String,

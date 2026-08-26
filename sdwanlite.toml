@@ -2,7 +2,9 @@
 name = "sdwanlite-demo"
 api_addr = "127.0.0.1"
 api_port = 18080
-api_token = "demo-secret-token"
+# Generate: openssl rand -hex 32
+# DO NOT commit real tokens to git
+api_token = "REPLACE_WITH_REAL_TOKEN"
 
 [mesh]
 enabled = false

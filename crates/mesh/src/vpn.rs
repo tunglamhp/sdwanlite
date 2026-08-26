@@ -97,12 +97,16 @@ impl PhyDevice for VpnDevice {
         let bytes = q.pop_front()?;
         Some((
             VpnRxToken { bytes },
-            VpnTxToken { shared: Arc::clone(&self.shared) },
+            VpnTxToken {
+                shared: Arc::clone(&self.shared),
+            },
         ))
     }
 
     fn transmit(&mut self, _ts: SmInstant) -> Option<Self::TxToken<'_>> {
-        Some(VpnTxToken { shared: Arc::clone(&self.shared) })
+        Some(VpnTxToken {
+            shared: Arc::clone(&self.shared),
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -162,7 +166,9 @@ impl VpnNode {
             udp: sock,
             peer: Mutex::new(peer_udp_addr),
         });
-        let mut device = VpnDevice { shared: Arc::clone(&shared) };
+        let mut device = VpnDevice {
+            shared: Arc::clone(&shared),
+        };
 
         let sockets = SocketSet::new(vec![]);
         let config = IfConfig::new(HardwareAddress::Ip);
@@ -322,7 +328,8 @@ impl VpnNode {
         }
 
         // smoltcp
-        self.iface.poll(self.now(), &mut self.device, &mut self.sockets);
+        self.iface
+            .poll(self.now(), &mut self.device, &mut self.sockets);
     }
 
     /// Listen for one virtual TCP connection on `vip:vport`.
@@ -338,11 +345,7 @@ impl VpnNode {
     }
 
     /// Open an outgoing virtual connection.
-    pub fn tcp_open(
-        &mut self,
-        dst: Ipv4Address,
-        vport: u16,
-    ) -> Result<SmSocketHandle, MeshError> {
+    pub fn tcp_open(&mut self, dst: Ipv4Address, vport: u16) -> Result<SmSocketHandle, MeshError> {
         let tcp = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0; 4096]),
             tcp::SocketBuffer::new(vec![0; 4096]),
@@ -352,13 +355,12 @@ impl VpnNode {
         let local: Ipv4Address = Ipv4Address::new(10, 7, 0, 1);
         self.sockets
             .get_mut::<tcp::Socket>(h)
-            .connect(
-                &mut self.iface.context(),
-                (dst, vport),
-                (local, local_port),
-            )
+            .connect(&mut self.iface.context(), (dst, vport), (local, local_port))
             .map_err(|e| {
-                MeshError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")))
+                MeshError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("{e}"),
+                ))
             })?;
         Ok(h)
     }

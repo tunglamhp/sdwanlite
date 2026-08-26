@@ -35,13 +35,9 @@ impl DnsProvider for CloudflareProvider {
     }
 
     async fn create_txt(&self, ch: &TxtChallenge) -> Result<String, AcmeError> {
-        let id = crate::dns01::cloudflare_txt_create(
-            &self.api_token,
-            &self.zone,
-            &ch.name,
-            &ch.value,
-        )
-        .await?;
+        let id =
+            crate::dns01::cloudflare_txt_create(&self.api_token, &self.zone, &ch.name, &ch.value)
+                .await?;
         Ok(id)
     }
 
@@ -108,10 +104,14 @@ impl DnsProvider for DigitalOceanProvider {
             .await
             .map_err(|e| AcmeError::Protocol(e.to_string()))?;
         let status = rsp.status();
-        let json: serde_json::Value =
-            rsp.json().await.map_err(|e| AcmeError::Protocol(e.to_string()))?;
+        let json: serde_json::Value = rsp
+            .json()
+            .await
+            .map_err(|e| AcmeError::Protocol(e.to_string()))?;
         if !status.is_success() {
-            return Err(AcmeError::Protocol(format!("digitalocean ({status}): {json}")));
+            return Err(AcmeError::Protocol(format!(
+                "digitalocean ({status}): {json}"
+            )));
         }
         json["record"]["id"]
             .as_u64()
@@ -144,7 +144,10 @@ mod tests {
 
     #[test]
     fn do_full_name_variants() {
-        let mk = |name: &str| TxtChallenge { name: name.into(), value: "v".into() };
+        let mk = |name: &str| TxtChallenge {
+            name: name.into(),
+            value: "v".into(),
+        };
         assert_eq!(
             do_full_name(&mk("_acme-challenge.example.com"), "example.com"),
             "_acme-challenge.example.com"
@@ -157,8 +160,14 @@ mod tests {
 
     #[test]
     fn provider_names() {
-        let cf = CloudflareProvider { api_token: "t".into(), zone: "example.com".into() };
-        let d_o = DigitalOceanProvider { api_token: "t".into(), domain: "example.com".into() };
+        let cf = CloudflareProvider {
+            api_token: "t".into(),
+            zone: "example.com".into(),
+        };
+        let d_o = DigitalOceanProvider {
+            api_token: "t".into(),
+            domain: "example.com".into(),
+        };
         assert_eq!(cf.name(), "cloudflare");
         assert_eq!(d_o.name(), "digitalocean");
     }

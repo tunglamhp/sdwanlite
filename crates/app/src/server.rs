@@ -1,12 +1,12 @@
 //! REST API + embedded web dashboard for sdwanlite.
 
+use futures_util::StreamExt as _;
 use sdwanlite_bgp::BgpSpeaker;
 use sdwanlite_lb::tcp::TcpLoadBalancer;
 use sdwanlite_lb::HttpLoadBalancer;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::Instant;
-use futures_util::StreamExt as _;
 
 pub struct AppState {
     pub config: Arc<sdwanlite_core::Config>,
@@ -78,7 +78,6 @@ struct LbSummaryView {
     http_pools: usize,
 }
 
-use axum::middleware;
 
 /// HTTP Basic Auth middleware — reads credentials from env vars.
 /// If SDWANLITE_AUTH_USER + SDWANLITE_AUTH_PASS are set, ALL routes require auth.
@@ -126,7 +125,12 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/reload", post(api_reload))
         .route("/api/tls/reload", post(api_tls_reload))
         .route("/api/alerts", get(api_alerts))
-        .route("/api/firewall", get(api_firewall_list).post(api_firewall_add).delete(api_firewall_delete))
+        .route(
+            "/api/firewall",
+            get(api_firewall_list)
+                .post(api_firewall_add)
+                .delete(api_firewall_delete),
+        )
         .route("/api/validate", post(api_validate))
         .route("/api/bgp/rib", get(api_rib))
         .route(
@@ -160,7 +164,9 @@ async fn api_status(
         rib_size = bgp.rib.read().await.len();
     }
 
-    let auth_enabled = std::env::var("SDWANLITE_AUTH_USER").map(|v| !v.is_empty()).unwrap_or(false);
+    let auth_enabled = std::env::var("SDWANLITE_AUTH_USER")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
     axum::Json(StatusView {
         node: state.config.general.name.clone(),
         version: env!("CARGO_PKG_VERSION"),
@@ -178,7 +184,9 @@ async fn api_status(
     })
 }
 
-async fn api_lb(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> axum::Json<serde_json::Value> {
+async fn api_lb(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
     let mut tcp = Vec::new();
     for pool in &state.tcp_pools {
         tcp.push(TcpPoolView {
@@ -225,7 +233,9 @@ async fn api_keypair() -> axum::Json<serde_json::Value> {
     }))
 }
 
-async fn api_rib(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> axum::Json<serde_json::Value> {
+async fn api_rib(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
     match &state.bgp {
         Some(bgp) => {
             let rib = bgp.rib.read().await;
@@ -279,14 +289,39 @@ async fn api_mesh_status() -> axum::Json<serde_json::Value> {
     }
 }
 
+/// Constant-time comparison to prevent timing attacks.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Resolve the API token: env `SDWANLITE_API_TOKEN` overrides config.
+fn resolve_token(state: &AppState) -> Option<String> {
+    if let Ok(env_token) = std::env::var("SDWANLITE_API_TOKEN") {
+        if !env_token.is_empty() {
+            return Some(env_token);
+        }
+    }
+    state.config.general.api_token.clone()
+}
+
 fn authorized(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
-    match &state.config.general.api_token {
-        None => true, // no token configured -> mutations open (lab default)
-        Some(t) => headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v == format!("Bearer {t}"))
-            .unwrap_or(false),
+    let Some(token) = resolve_token(state) else {
+        return true;
+    };
+    let expected = format!("Bearer {token}");
+    match headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(provided) => ct_eq(provided.as_bytes(), expected.as_bytes()),
+        None => false,
     }
 }
 
@@ -302,7 +337,11 @@ async fn api_add_backend(
     let Some(pool) = state.tcp_pools.iter().find(|p| p.name == name) else {
         return axum::Json(serde_json::json!({ "ok": false, "error": "pool not found" }));
     };
-    let Some(addr) = body.get("addr").and_then(|a| a.as_str()).and_then(|a| a.parse().ok()) else {
+    let Some(addr) = body
+        .get("addr")
+        .and_then(|a| a.as_str())
+        .and_then(|a| a.parse().ok())
+    else {
         return axum::Json(serde_json::json!({ "ok": false, "error": "invalid addr" }));
     };
     let added = pool.add_backend(addr).await;
@@ -321,7 +360,11 @@ async fn api_remove_backend(
     let Some(pool) = state.tcp_pools.iter().find(|p| p.name == name) else {
         return axum::Json(serde_json::json!({ "ok": false, "error": "pool not found" }));
     };
-    let Some(addr) = body.get("addr").and_then(|a| a.as_str()).and_then(|a| a.parse().ok()) else {
+    let Some(addr) = body
+        .get("addr")
+        .and_then(|a| a.as_str())
+        .and_then(|a| a.parse().ok())
+    else {
         return axum::Json(serde_json::json!({ "ok": false, "error": "invalid addr" }));
     };
     let removed = pool.remove_backend(addr).await;
@@ -341,11 +384,34 @@ async fn api_metrics(
     for pool in &state.tcp_pools {
         for b in pool.backends().await {
             let lbl = format!("{{pool=\"tcp:{}\",backend=\"{}\"}}", pool.name, b.addr);
-            out.push_str(&format!("sdwanlite_backend_healthy{lbl} {}\n", b.is_healthy() as u8));
-            out.push_str(&format!("sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"active\"}} {}\n", pool.name, b.addr, b.active_conns()));
-            out.push_str(&format!("sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"total\"}} {}\n", pool.name, b.addr, b.total_conns()));
-            out.push_str(&format!("sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"rx\"}} {}\n", pool.name, b.addr, b.rx_bytes()));
-            out.push_str(&format!("sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"tx\"}} {}\n", pool.name, b.addr, b.tx_bytes()));
+            out.push_str(&format!(
+                "sdwanlite_backend_healthy{lbl} {}\n",
+                b.is_healthy() as u8
+            ));
+            out.push_str(&format!(
+                "sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"active\"}} {}\n",
+                pool.name,
+                b.addr,
+                b.active_conns()
+            ));
+            out.push_str(&format!(
+                "sdwanlite_backend_conns{{pool=\"tcp:{}\",backend=\"{}\",kind=\"total\"}} {}\n",
+                pool.name,
+                b.addr,
+                b.total_conns()
+            ));
+            out.push_str(&format!(
+                "sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"rx\"}} {}\n",
+                pool.name,
+                b.addr,
+                b.rx_bytes()
+            ));
+            out.push_str(&format!(
+                "sdwanlite_backend_bytes{{pool=\"tcp:{}\",backend=\"{}\",dir=\"tx\"}} {}\n",
+                pool.name,
+                b.addr,
+                b.tx_bytes()
+            ));
         }
         out.push_str(&format!(
             "sdwanlite_pool_rejected{{pool=\"tcp:{}\"}} {}\n",
@@ -357,7 +423,10 @@ async fn api_metrics(
         for backends in pool.backends_by_route() {
             for b in &backends {
                 let lbl = format!("{{pool=\"http:{}\",backend=\"{}\"}}", pool.name, b.addr);
-                out.push_str(&format!("sdwanlite_backend_healthy{lbl} {}\n", b.is_healthy() as u8));
+                out.push_str(&format!(
+                    "sdwanlite_backend_healthy{lbl} {}\n",
+                    b.is_healthy() as u8
+                ));
                 out.push_str(&format!("sdwanlite_backend_conns{{pool=\"http:{}\",backend=\"{}\",kind=\"total\"}} {}\n", pool.name, b.addr, b.total_conns()));
             }
         }
@@ -380,7 +449,9 @@ async fn api_metrics(
     out.push_str("# HELP sdwanlite_bgp_rib_routes Current best-path RIB size.\n# TYPE sdwanlite_bgp_rib_routes gauge\n");
     out.push_str(&format!("sdwanlite_bgp_rib_routes {rib_size}\n"));
     out.push_str("# HELP sdwanlite_bgp_sessions_established Established BGP sessions.\n# TYPE sdwanlite_bgp_sessions_established gauge\n");
-    out.push_str(&format!("sdwanlite_bgp_sessions_established {sessions_est}\n"));
+    out.push_str(&format!(
+        "sdwanlite_bgp_sessions_established {sessions_est}\n"
+    ));
     out.push_str(&format!(
         "# HELP sdwanlite_uptime_seconds Process uptime in seconds.\n# TYPE sdwanlite_uptime_seconds counter\nsdwanlite_uptime_seconds {}\n",
         state.started.elapsed().as_secs()
@@ -408,8 +479,11 @@ async fn api_reload(
     for desired in &new_cfg.lb.tcp_pools {
         if let Some(pool) = state.tcp_pools.iter().find(|p| p.name == desired.name) {
             // algorithm / limits live-update where possible
-            let want: Vec<std::net::SocketAddr> =
-                desired.backends.iter().filter_map(|s| s.parse().ok()).collect();
+            let want: Vec<std::net::SocketAddr> = desired
+                .backends
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
             let current = pool.backends().await;
             for w in &want {
                 if !current.iter().any(|c| c.addr == *w) {
@@ -420,7 +494,9 @@ async fn api_reload(
             for c in &current {
                 if !want.contains(&c.addr) {
                     pool.remove_backend(c.addr).await;
-                    applied.push(serde_json::json!({"pool": desired.name, "removed": c.addr.to_string()}));
+                    applied.push(
+                        serde_json::json!({"pool": desired.name, "removed": c.addr.to_string()}),
+                    );
                 }
             }
         } else {
@@ -448,7 +524,9 @@ async fn api_tls_reload(
     }
     let mut results = Vec::new();
     for pool_cfg in &state.config.lb.http_pools {
-        let Some(tls_cfg) = &pool_cfg.tls else { continue };
+        let Some(tls_cfg) = &pool_cfg.tls else {
+            continue;
+        };
         let Some(pool) = state.http_pools.iter().find(|p| p.name == pool_cfg.name) else {
             continue;
         };
@@ -478,11 +556,14 @@ async fn api_events(
         let uptime = state.started.elapsed().as_secs();
         let tcp_pools = state.tcp_pools.len();
         let http_pools = state.http_pools.len();
-        let ev = Event::default().data(serde_json::json!({
-            "node": node,
-            "uptime_secs": uptime,
-            "lb": { "tcp_pools": tcp_pools, "http_pools": http_pools }
-        }).to_string());
+        let ev = Event::default().data(
+            serde_json::json!({
+                "node": node,
+                "uptime_secs": uptime,
+                "lb": { "tcp_pools": tcp_pools, "http_pools": http_pools }
+            })
+            .to_string(),
+        );
         Ok(ev)
     });
     axum::response::Sse::new(stream).keep_alive(KeepAlive::default())
@@ -511,13 +592,15 @@ async fn api_firewall_list(
 async fn api_firewall_add(
     axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    axum::Json(rule): axum::Json<serde_json::Value>,
+    axum::Json(_rule): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     if !authorized(&_state, &headers) {
         return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
     }
     // firewall rules are read from config; dynamic add requires restart
-    axum::Json(serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; add to sdwanlite.toml and restart" }))
+    axum::Json(
+        serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; add to sdwanlite.toml and restart" }),
+    )
 }
 
 async fn api_firewall_delete(
@@ -528,7 +611,9 @@ async fn api_firewall_delete(
     if !authorized(&_state, &headers) {
         return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
     }
-    axum::Json(serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; edit sdwanlite.toml and restart" }))
+    axum::Json(
+        serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; edit sdwanlite.toml and restart" }),
+    )
 }
 
 async fn api_validate(

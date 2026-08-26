@@ -7,8 +7,8 @@
 
 use base64::Engine;
 use rand::rngs::OsRng;
-use sdwanlite_core::{Mesh as MeshConfig, Peer};
 use sdwanlite_core::Config;
+use sdwanlite_core::{Mesh as MeshConfig, Peer};
 use std::fmt;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -72,7 +72,10 @@ pub fn render_wg_config(ifname: &str, mesh: &MeshConfig) -> Result<String, MeshE
         mesh.listen_port
     );
     for peer in &mesh.peers {
-        out.push_str(&format!("\n[Peer]\n# name = {}\nPublicKey = {}\n", peer.name, peer.public_key));
+        out.push_str(&format!(
+            "\n[Peer]\n# name = {}\nPublicKey = {}\n",
+            peer.name, peer.public_key
+        ));
         if let Some(ep) = &peer.endpoint {
             out.push_str(&format!("Endpoint = {ep}\n"));
         }
@@ -94,7 +97,11 @@ pub fn render_wg_setconf(mesh: &MeshConfig) -> Result<String, MeshError> {
         return Err(MeshError::BadKey);
     }
     decode_key(&mesh.private_key)?;
-    let mut out = format!("private_key = {}\nlisten_port = {}\n", mesh.private_key.trim(), mesh.listen_port);
+    let mut out = format!(
+        "private_key = {}\nlisten_port = {}\n",
+        mesh.private_key.trim(),
+        mesh.listen_port
+    );
     for peer in &mesh.peers {
         out.push_str(&format!("\n[Peer]\npublic_key = {}\n", peer.public_key));
         if let Some(ep) = &peer.endpoint {
@@ -133,19 +140,33 @@ pub fn validate(mesh: &MeshConfig) -> Result<(), Vec<String>> {
             })()
             .is_some();
             if !ok {
-                problems.push(format!("peer '{}': allowed_ips entry '{a}' is not a valid CIDR", p.name));
+                problems.push(format!(
+                    "peer '{}': allowed_ips entry '{a}' is not a valid CIDR",
+                    p.name
+                ));
             }
         }
         // endpoint sanity when present
         if let Some(ep) = &p.endpoint {
-            if ep.rsplit(':').next().map(|port| port.parse::<u16>().is_err()).unwrap_or(true)
+            if ep
+                .rsplit(':')
+                .next()
+                .map(|port| port.parse::<u16>().is_err())
+                .unwrap_or(true)
                 && !ep.contains(':')
             {
-                problems.push(format!("peer '{}': endpoint '{ep}' must be host:port", p.name));
+                problems.push(format!(
+                    "peer '{}': endpoint '{ep}' must be host:port",
+                    p.name
+                ));
             }
         }
     }
-    if problems.is_empty() { Ok(()) } else { Err(problems) }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }
 
 /// Apply the mesh configuration with `wg-quick up <path>` (Linux only).
@@ -162,7 +183,7 @@ pub async fn apply(cfg: &Config, workdir: &std::path::Path) -> Result<(), MeshEr
         let conf = render_wg_config(ifname, &cfg.mesh)?;
         let path = workdir.join(format!("{ifname}.conf"));
         tokio::fs::write(&path, conf).await?;
-        run("wg-quick", &[ "up", path.to_string_lossy().as_ref() ]).await
+        run("wg-quick", &["up", path.to_string_lossy().as_ref()]).await
     }
 }
 
@@ -233,7 +254,11 @@ pub async fn apply_setconf(mesh: &MeshConfig) -> Result<(), MeshError> {
             stdin.write_all(conf.as_bytes()).await?;
         }
         let out = child.wait().await?;
-        if out.success() { Ok(()) } else { Err(MeshError::CommandFailed("wg setconf failed".into())) }
+        if out.success() {
+            Ok(())
+        } else {
+            Err(MeshError::CommandFailed("wg setconf failed".into()))
+        }
     }
 }
 
@@ -246,7 +271,12 @@ pub async fn add_peer(peer: &Peer) -> Result<(), MeshError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let mut args = vec!["set".to_string(), "sdwanlite0".to_string(), "peer".to_string(), peer.public_key.clone()];
+        let mut args = vec![
+            "set".to_string(),
+            "sdwanlite0".to_string(),
+            "peer".to_string(),
+            peer.public_key.clone(),
+        ];
         if let Some(ep) = &peer.endpoint {
             args.extend(["endpoint".into(), ep.clone()]);
         }
@@ -254,7 +284,10 @@ pub async fn add_peer(peer: &Peer) -> Result<(), MeshError> {
             args.extend(["allowed-ips".into(), peer.allowed_ips.join(",")]);
         }
         if peer.keepalive_secs > 0 {
-            args.extend(["persistent-keepalive".into(), peer.keepalive_secs.to_string()]);
+            args.extend([
+                "persistent-keepalive".into(),
+                peer.keepalive_secs.to_string(),
+            ]);
         }
         run("wg", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
     }
@@ -269,7 +302,11 @@ pub async fn remove_peer(public_key_b64: &str) -> Result<(), MeshError> {
     }
     #[cfg(target_os = "linux")]
     {
-        run("wg", &["set", "sdwanlite0", "peer", public_key_b64, "remove"]).await
+        run(
+            "wg",
+            &["set", "sdwanlite0", "peer", public_key_b64, "remove"],
+        )
+        .await
     }
 }
 
@@ -296,7 +333,10 @@ async fn run_capture(cmd: &str, args: &[&str]) -> Result<String, MeshError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let out = tokio::process::Command::new(cmd).args(args).output().await?;
+        let out = tokio::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .await?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -312,7 +352,6 @@ impl fmt::Display for KeyPair {
         write!(f, "public={}", self.public_b64)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -377,14 +416,35 @@ mod tests {
             private_key: "not-base64!!".into(),
             listen_port: 51820,
             peers: vec![
-                Peer { name: "dup".into(), public_key: kp.public_b64.clone(), endpoint: None, allowed_ips: vec!["garbage".into()], keepalive_secs: 0 },
-                Peer { name: "dup".into(), public_key: kp.public_b64.clone(), endpoint: None, allowed_ips: vec![], keepalive_secs: 0 },
+                Peer {
+                    name: "dup".into(),
+                    public_key: kp.public_b64.clone(),
+                    endpoint: None,
+                    allowed_ips: vec!["garbage".into()],
+                    keepalive_secs: 0,
+                },
+                Peer {
+                    name: "dup".into(),
+                    public_key: kp.public_b64.clone(),
+                    endpoint: None,
+                    allowed_ips: vec![],
+                    keepalive_secs: 0,
+                },
             ],
         };
         let problems = validate(&bad).unwrap_err();
-        assert!(problems.iter().any(|p| p.contains("private_key")), "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("duplicate")), "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("allowed_ips")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("private_key")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("duplicate")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("allowed_ips")),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -426,7 +486,12 @@ mod boringtun_tests {
         // cross-wire public keys and run the Noise-IK handshake over loopback
         let elapsed = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            handshake_smoke(&kp_a.private_b64, &kp_b.public_b64, &kp_b.private_b64, &kp_a.public_b64),
+            handshake_smoke(
+                &kp_a.private_b64,
+                &kp_b.public_b64,
+                &kp_b.private_b64,
+                &kp_a.public_b64,
+            ),
         )
         .await
         .expect("handshake within timeout")
@@ -494,7 +559,9 @@ mod vpn_tests {
 
         // A dials B's virtual service
         assert!(a.send_handshake_init(), "handshake init failed");
-        let h = a.tcp_open(smoltcp::wire::Ipv4Address::from([10, 7, 0, 2]), 8000).unwrap();
+        let h = a
+            .tcp_open(smoltcp::wire::Ipv4Address::from([10, 7, 0, 2]), 8000)
+            .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(20);
         let payload = b"hello-over-wg";
