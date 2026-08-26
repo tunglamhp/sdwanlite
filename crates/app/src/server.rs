@@ -49,6 +49,7 @@ struct HttpPoolView {
 
 #[derive(Serialize)]
 struct StatusView {
+    auth_enabled: bool,
     node: String,
     version: &'static str,
     uptime_secs: u64,
@@ -159,6 +160,7 @@ async fn api_status(
         rib_size = bgp.rib.read().await.len();
     }
 
+    let auth_enabled = std::env::var("SDWANLITE_AUTH_USER").map(|v| !v.is_empty()).unwrap_or(false);
     axum::Json(StatusView {
         node: state.config.general.name.clone(),
         version: env!("CARGO_PKG_VERSION"),
@@ -168,6 +170,7 @@ async fn api_status(
         bgp_enabled: state.config.bgp.enabled,
         bgp_sessions: sessions,
         bgp_rib_size: rib_size,
+        auth_enabled,
         lb: LbSummaryView {
             tcp_pools: state.tcp_pools.len(),
             http_pools: state.http_pools.len(),

@@ -49,6 +49,8 @@ struct Status {
     bgp_rib_size: usize,
     #[serde(default)]
     lb: LbCounts,
+    #[serde(default)]
+    auth_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -228,6 +230,8 @@ fn app() -> Element {
     let mut mesh: Signal<Result<MeshStatus, String>> = use_signal(|| Err("loading…".into()));
     let mut rib: Signal<Result<RibData, String>> = use_signal(|| Err("loading…".into()));
     let mut rib_hist: Signal<Vec<usize>> = use_signal(Vec::new);
+    let mut auto_refresh: Signal<bool> = use_signal(|| true);
+    let mut sidebar_open: Signal<bool> = use_signal(|| false);
 
     use_effect(move || {
         spawn(async move {
@@ -259,8 +263,11 @@ fn app() -> Element {
 
     rsx! {
         div { class: "layout",
+            {if sidebar_open() { rsx! {
+                div { class: "sidebar-overlay", onclick: move |_| sidebar_open.set(false) }
+            }} else { rsx! {} }}
             // ---- Sidebar ----
-            div { class: "sidebar",
+            div { class: if sidebar_open() { "sidebar open" } else { "sidebar" },
                 div { class: "sidebar-header",
                     div { class: "sidebar-logo", "SL" }
                     div { b { "SDWANLite" } small { "CONTROL PANEL" } }
@@ -290,6 +297,13 @@ fn app() -> Element {
                     div { class: "live", span { class: "live-dot" } "LIVE" }
                     button {
                         class: "icon-btn",
+                        title: "Toggle auto-refresh",
+                        style: if auto_refresh() { "color:var(--primary-light)" } else { "color:var(--muted)" },
+                        onclick: move |_| auto_refresh.toggle(),
+                        {if auto_refresh() { "⏸" } else { "▶" }}
+                    }
+                    button {
+                        class: "icon-btn",
                         title: "Toggle light/dark",
                         onclick: move |_| {
                             let next = if theme() == "dark" { "light" } else { "dark" };
@@ -312,7 +326,8 @@ fn app() -> Element {
                         "actions" => "Quick Actions",
                         _ => "Dashboard Overview",
                     }} }
-                    div { class: "spacer" }
+                    button { class: "hamburger", onclick: move |_| sidebar_open.toggle(), "☰" }
+                div { class: "spacer" }
                 }
                 {match tab().as_str() {
                     "topology" => rsx! { TopologyView { lb } },
@@ -397,6 +412,10 @@ fn Overview(status: Signal<Result<Status, String>>) -> Element {
                         div { class: "kv-row",
                             span { class: "k", "WG peers configured" }
                             span { "{s.mesh_peers_configured}" }
+                        }
+                        div { class: "kv-row",
+                            span { class: "k", "Auth" }
+                            {if s.auth_enabled { rsx! { span { class: "pill ok", "enabled" } }} else { rsx! { span { class: "pill warn", "dev mode" } }}}
                         }
                     },
                     _ => rsx! {},
