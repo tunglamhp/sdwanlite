@@ -30,6 +30,14 @@ async fn main() -> Result<()> {
     if used_sample {
         tracing::warn!(path = %config_path.display(), "config not found or invalid, running with built-in sample");
     }
+    if config.general.api_token.as_deref() == Some("REPLACE_WITH_REAL_TOKEN") {
+        tracing::warn!("api_token is still the placeholder — set SDWANLITE_API_TOKEN env or edit config before exposing to network");
+    }
+    if std::env::var("SDWANLITE_AUTH_USER").is_err()
+        && std::env::var("SDWANLITE_AUTH_PASS").is_err()
+    {
+        tracing::warn!("SDWANLITE_AUTH_USER/PASS not set — dashboard API is open (dev mode)");
+    }
     let config = Arc::new(config);
 
     // Load balancers

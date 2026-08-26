@@ -39,7 +39,6 @@ fn client(_token: &str) -> Result<reqwest::Client, AcmeError> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| AcmeError::Protocol(format!("http client: {e}")))
-
 }
 
 async fn cf_request(

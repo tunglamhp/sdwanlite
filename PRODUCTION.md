@@ -72,6 +72,19 @@ export SDWANLITE_API_TOKEN=$(openssl rand -hex 32)
 - `SDWANLITE_API_TOKEN`: overrides `api_token` in config (bearer token for API mutations)
 - **NEVER commit real tokens to git.** Use env vars or a secrets manager.
 
+## Systemd with auth env
+
+```ini
+# /etc/systemd/system/sdwanlite.service
+[Service]
+Environment=SDWANLITE_AUTH_USER=admin
+Environment=SDWANLITE_AUTH_PASS=CHANGE_ME
+Environment=SDWANLITE_API_TOKEN=CHANGE_ME_TOO
+```
+
+Generate secure values: `openssl rand -hex 32`
+**Never commit real tokens.** Use `EnvironmentFile=/etc/sdwanlite/env` instead of inline `Environment=` for production.
+
 ## Hardening checklist
 
 - Set `general.api_token` before exposing the API beyond loopback.

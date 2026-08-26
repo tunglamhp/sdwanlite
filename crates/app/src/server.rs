@@ -78,7 +78,6 @@ struct LbSummaryView {
     http_pools: usize,
 }
 
-
 /// HTTP Basic Auth middleware — reads credentials from env vars.
 /// If SDWANLITE_AUTH_USER + SDWANLITE_AUTH_PASS are set, ALL routes require auth.
 /// If not set, access is open (dev mode) but a warning is logged at startup.

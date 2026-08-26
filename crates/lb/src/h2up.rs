@@ -60,17 +60,18 @@ pub struct H2Session {
 /// Establish an h2 client session to `addr`.
 pub async fn open_session(addr: SocketAddr) -> std::io::Result<H2Session> {
     let tcp = TcpStream::connect(addr).await?;
-    let (send_request, connection) = h2::client::handshake(tcp).await.map_err(|e| {
-        std::io::Error::other( format!("h2 handshake: {e}"))
-    })?;
+    let (send_request, connection) = h2::client::handshake(tcp)
+        .await
+        .map_err(|e| std::io::Error::other(format!("h2 handshake: {e}")))?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             tracing::debug!("h2 connection ended: {e}");
         }
     });
-    let send = send_request.ready().await.map_err(|e| {
-        std::io::Error::other( format!("h2 not ready: {e}"))
-    })?;
+    let send = send_request
+        .ready()
+        .await
+        .map_err(|e| std::io::Error::other(format!("h2 not ready: {e}")))?;
     Ok(H2Session { send })
 }
 
@@ -112,7 +113,7 @@ impl H2Session {
         };
         self.send
             .send_request(request, false)
-            .map_err(|e| std::io::Error::other( format!("h2 send: {e}")))
+            .map_err(|e| std::io::Error::other(format!("h2 send: {e}")))
     }
 }
 
@@ -126,9 +127,7 @@ pub async fn send_all(
         let cap = std::future::poll_fn(|cx| send.poll_capacity(cx))
             .await
             .transpose()
-            .map_err(|e| {
-                std::io::Error::other( format!("h2 capacity: {e}"))
-            })?
+            .map_err(|e| std::io::Error::other(format!("h2 capacity: {e}")))?
             .unwrap_or(0);
         if cap == 0 {
             return Err(std::io::Error::new(
