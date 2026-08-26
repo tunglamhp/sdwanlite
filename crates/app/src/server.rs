@@ -380,15 +380,28 @@ fn percentile(samples: &[u64], q: usize) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 fn save_path_policy(state: &AppState) -> Result<(), String> {
+    use std::io::Write;
     let store = state.path_policy.lock().map_err(|_| "store poisoned")?;
     let tmp = state.path_policy_path.with_extension("tmp");
     let json = serde_json::to_vec_pretty(&*store).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    // Create the temp file with restrictive permissions up front so secrets
+    // are never briefly world-readable, and fsync before the atomic rename.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(&json).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    drop(f);
     std::fs::rename(&tmp, &state.path_policy_path).map_err(|e| e.to_string())
 }
 
@@ -418,9 +431,13 @@ async fn api_labels_put(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::Json(labels): axum::Json<Vec<sdwanlite_core::PathLabel>>,
 ) -> axum::response::Response {
+    let mut seen = std::collections::HashSet::new();
     for l in &labels {
         if l.name.trim().is_empty() {
             return err_json(400, "label name must not be empty");
+        }
+        if !seen.insert(l.name.trim().to_string()) {
+            return err_json(400, &format!("duplicate label name: {}", l.name));
         }
     }
     let mut store = lock_store(&state);
@@ -449,6 +466,23 @@ async fn api_policies_put(
         }
     }
     let mut store = lock_store(&state);
+    for p in &policies {
+        for a in p
+            .rules
+            .iter()
+            .map(|r| &r.action)
+            .chain(std::iter::once(&p.default_action))
+        {
+            for lbl in &a.labels {
+                if !store.labels.iter().any(|l| &l.name == lbl) {
+                    return err_json(
+                        400,
+                        &format!("policy {}: references undefined label {lbl}", p.name),
+                    );
+                }
+            }
+        }
+    }
     store.policies = policies;
     drop(store);
     match save_path_policy(&state) {
