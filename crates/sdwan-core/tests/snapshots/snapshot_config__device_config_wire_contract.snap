@@ -1,0 +1,75 @@
+---
+source: crates/sdwan-core/tests/snapshot_config.rs
+expression: sample_config()
+---
+{
+  "device_id": "00000000-0000-0000-0000-000000000001",
+  "org_id": "00000000-0000-0000-0000-000000000002",
+  "site_id": "00000000-0000-0000-0000-000000000003",
+  "hostname": "edge-snapshot",
+  "interfaces": [
+    {
+      "name": "eth0",
+      "addresses": [
+        "192.0.2.10"
+      ],
+      "mtu": 1500,
+      "path_label": "MPLS-Primary"
+    }
+  ],
+  "tunnels": [
+    {
+      "kind": "wire_guard",
+      "interface": "wg0",
+      "path_label": "MPLS-Primary",
+      "health_check": {
+        "interval_ms": 1000,
+        "probe_type": "icmp",
+        "threshold": 3,
+        "timeout_ms": 500
+      },
+      "endpoint": "203.0.113.7:51820",
+      "allowed_ips": [
+        "198.51.100.10"
+      ],
+      "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    }
+  ],
+  "routes": [
+    {
+      "destination": "10.0.0.0/8",
+      "next_hop": "192.0.2.1",
+      "metric": 100
+    }
+  ],
+  "firewall": {
+    "rules": [
+      {
+        "action": "accept",
+        "source": "192.0.2.0/24",
+        "destination": null,
+        "protocol": "tcp",
+        "port": 443,
+        "comment": "management"
+      }
+    ]
+  },
+  "qos": {
+    "classes": [
+      {
+        "name": "voip",
+        "dscp": 46,
+        "bandwidth_bps": 1000000
+      }
+    ]
+  },
+  "path_labels": [
+    {
+      "id": "00000000-0000-0000-0000-000000000007",
+      "name": "MPLS-Primary",
+      "type": "mpls",
+      "sla": "loss<0.1% rtt<10ms"
+    }
+  ],
+  "version": 7
+}

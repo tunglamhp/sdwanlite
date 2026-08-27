@@ -37,27 +37,26 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use sdwan_core::DeviceConfig;
+use sdwan_core::{ConfigVersion, DeviceConfig, DeviceId, OrgId, SiteId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use uuid::Uuid;
 
 /// In-memory device store. P0 keeps this in `Arc<Mutex<…>>`; P1 swaps in SQLite via
 /// the `Storage` trait from `migrations/001_init.sql`.
 #[derive(Default)]
 pub struct DeviceStore {
-    inner: Mutex<HashMap<Uuid, DeviceRecord>>,
+    inner: Mutex<HashMap<DeviceId, DeviceRecord>>,
 }
 
 /// One row in the device store.
 #[derive(Clone, Debug)]
 pub struct DeviceRecord {
-    /// Org that owns this device (multi-tenant isolation).
-    pub org_id: Uuid,
-    /// Site within the org.
-    pub site_id: Uuid,
+    /// Org that owns this device (multi-tenant isolation, branded [`OrgId`]).
+    pub org_id: OrgId,
+    /// Site within the org (branded [`SiteId`]).
+    pub site_id: SiteId,
     /// Hostname reported at registration.
     pub hostname: String,
     /// Current config (latest committed version).
@@ -72,11 +71,12 @@ impl DeviceStore {
         Arc::new(Self::default())
     }
 
-    /// Insert a new device. Returns `Err(Storage)` if the device is already registered.
+    /// Insert a new device. Returns `Err(AlreadyRegistered)` (HTTP 409) if the
+    /// device is already registered — the agent treats 409 as idempotent-OK.
     pub async fn insert(&self, rec: DeviceRecord) -> Result<()> {
         let mut g = self.inner.lock().await;
         if g.contains_key(&rec.current.device_id) {
-            return Err(AgentError::Storage("device already registered".into()));
+            return Err(AgentError::AlreadyRegistered);
         }
         let id = rec.current.device_id;
         g.insert(id, rec);
@@ -84,21 +84,21 @@ impl DeviceStore {
     }
 
     /// Fetch a device record (clone).
-    pub async fn get(&self, id: Uuid) -> Result<DeviceRecord> {
+    pub async fn get(&self, id: DeviceId) -> Result<DeviceRecord> {
         self.inner
             .lock()
             .await
             .get(&id)
             .cloned()
-            .ok_or_else(|| AgentError::Storage(format!("device {id} not found")))
+            .ok_or(AgentError::NotFound)
     }
 
     /// Replace a device's current config (used by `/apply`).
-    pub async fn replace_config(&self, id: Uuid, new_config: DeviceConfig) -> Result<DeviceRecord> {
+    pub async fn replace_config(&self, id: DeviceId, new_config: DeviceConfig) -> Result<DeviceRecord> {
         let mut g = self.inner.lock().await;
         let rec = g
             .get_mut(&id)
-            .ok_or_else(|| AgentError::Storage(format!("device {id} not found")))?;
+            .ok_or(AgentError::NotFound)?;
         rec.current = new_config.clone();
         let _ = rec.tx.send(new_config.clone());
         Ok(rec.clone())
@@ -106,48 +106,48 @@ impl DeviceStore {
 }
 
 /// Request body for `POST /api/v1/devices/register`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct RegisterRequest {
-    /// UUIDv4 of the device (agent generated and persisted locally).
-    pub device_id: Uuid,
-    /// Owning org.
-    pub org_id: Uuid,
-    /// Site within the org.
-    pub site_id: Uuid,
+    /// Device identity (UUIDv4, branded [`DeviceId`]).
+    pub device_id: DeviceId,
+    /// Owning org (branded [`OrgId`]).
+    pub org_id: OrgId,
+    /// Site within the org (branded [`SiteId`]).
+    pub site_id: SiteId,
     /// Hostname reported at registration.
     pub hostname: String,
     /// First config version is always 1; the agent sends no config on register —
     /// it pulls from `GET /api/v1/devices/:id/config`.
     #[serde(default = "default_one")]
-    pub version: u64,
+    pub version: ConfigVersion,
 }
 
-fn default_one() -> u64 {
-    1
+fn default_one() -> ConfigVersion {
+    ConfigVersion::new(1)
 }
 
 /// Response body for register.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RegisterResponse {
-    pub device_id: Uuid,
-    pub org_id: Uuid,
-    pub site_id: Uuid,
-    pub current_version: u64,
+    pub device_id: DeviceId,
+    pub org_id: OrgId,
+    pub site_id: SiteId,
+    pub current_version: ConfigVersion,
     /// URL the agent should open the WebSocket against (RFC 5737 example).
     pub stream_url: String,
 }
 
 /// Request body for `POST /api/v1/devices/:id/apply` (controller push).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApplyRequest {
     pub config: DeviceConfig,
 }
 
 /// Response body for `/apply`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApplyResponse {
-    pub device_id: Uuid,
-    pub applied_version: u64,
+    pub device_id: DeviceId,
+    pub applied_version: ConfigVersion,
     /// Echoed from the agent's verify-fn so dashboards can branch on the status.
     pub verified: bool,
 }
@@ -180,10 +180,10 @@ fn check_auth(headers: &HeaderMap, token: &str) -> Result<()> {
     let h = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AgentError::Http("missing authorization".into()))?;
+        .ok_or(AgentError::Unauthorized)?;
     let expected = format!("Bearer {token}");
     if !bool_eq(h.as_bytes(), expected.as_bytes()) {
-        return Err(AgentError::Http("invalid token".into()));
+        return Err(AgentError::Unauthorized);
     }
     Ok(())
 }
@@ -263,7 +263,7 @@ async fn register(
 async fn get_config(
     State(s): State<ControllerState>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(id): Path<DeviceId>,
 ) -> Result<Json<DeviceConfig>> {
     check_auth(&headers, &s.token)?;
     let rec = s.store.get(id).await?;
@@ -273,7 +273,7 @@ async fn get_config(
 async fn apply_config(
     State(s): State<ControllerState>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(id): Path<DeviceId>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>> {
     check_auth(&headers, &s.token)?;
@@ -325,24 +325,43 @@ async fn post_telemetry(
 
 /// WebSocket upgrade. The agent keeps the socket open and receives the latest
 /// `DeviceConfig` whenever the controller pushes a new version.
+/// Query parameters for the `/stream/config` WebSocket upgrade.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct StreamQuery {
+    /// The device whose config-delta broadcast the caller wants to subscribe to.
+    device_id: DeviceId,
+}
+
+/// WebSocket upgrade. The agent keeps the socket open and receives the latest
+/// `DeviceConfig` whenever the controller pushes a new version for the device
+/// identified by the `?device_id=<uuid>` query parameter.
+///
+/// Auth: `Authorization: Bearer <bootstrap_token>` on the upgrade request.
+/// RFC 6455 forbids custom headers in the upgrade handshake, so the agent sets
+/// the standard `Authorization` header via tokio-tungstenite (browsers cannot,
+/// but the P0 agent is a native client; a browser-based UI lands in P3).
+///
+/// P0-4 fix: the WebSocket upgrade is scoped to a single registered device;
+/// any other `device_id` (or an unknown UUID) yields 403 / 404 before the
+/// upgrade completes.
 async fn stream_ws(
     State(s): State<ControllerState>,
     headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<StreamQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<axum::response::Response> {
     check_auth(&headers, &s.token)?;
-    // `device_id` is passed via `?device_id=<uuid>` query param (RFC 6455 doesn't
-    // allow headers in the upgrade request, so we use the URL).
-    // For P0 we accept any registered device; full query parsing lives in P1.
+    // Verify the device is registered; reject before upgrading.
+    let _rec = s.store.get(q.device_id).await?;
     Ok(ws.on_upgrade(move |socket| async move {
         let (mut tx, mut rx) = socket.split();
         let store = s.store.clone();
-        // Fan-in: forward broadcast deltas to this socket until it closes.
-        // The P0 broadcast is per-device; for the demo we pick the first device.
-        let mut subscribers: Vec<broadcast::Receiver<DeviceConfig>> = Vec::new();
-        if let Some(rec) = store.inner.lock().await.values().next() {
-            subscribers.push(rec.tx.subscribe());
-        }
+        // Subscribe to the broadcast for THIS device only (not the first one).
+        let sub = {
+            let guard = store.inner.lock().await;
+            guard.get(&q.device_id).map(|rec| rec.tx.subscribe())
+        };
+        let Some(mut sub) = sub else { return };
         // Read loop (drop incoming; P0 is server-push only).
         tokio::spawn(async move {
             while let Some(msg) = rx.next().await {
@@ -352,12 +371,10 @@ async fn stream_ws(
             }
         });
         // Write loop.
-        while let Some(mut sub) = subscribers.pop() {
-            while let Ok(cfg) = sub.recv().await {
-                let payload = serde_json::to_string(&cfg).unwrap_or_default();
-                if tx.send(Message::Text(payload)).await.is_err() {
-                    break;
-                }
+        while let Ok(cfg) = sub.recv().await {
+            let payload = serde_json::to_string(&cfg).unwrap_or_default();
+            if tx.send(Message::Text(payload)).await.is_err() {
+                break;
             }
         }
     }))

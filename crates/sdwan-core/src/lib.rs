@@ -44,18 +44,187 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
+/// Generates a branded UUID newtype: a `Uuid` that the type system will never
+/// confuse with any other ID (Matt-Pocock-style "branded" identifiers).
+///
+/// Serde is `#[serde(transparent)]`, so the JSON wire format is unchanged — a
+/// plain UUID string. The branding is purely a compile-time guarantee.
+macro_rules! branded_uuid {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(
+            Clone, Copy, Debug, PartialEq, Eq, Hash,
+            Serialize, Deserialize,
+            schemars::JsonSchema,
+        )]
+        #[serde(transparent)]
+        pub struct $name(Uuid);
+
+        impl $name {
+            /// Generate a fresh random identifier (UUIDv4).
+            pub fn new() -> Self {
+                Self(Uuid::new_v4())
+            }
+
+            /// Wrap an already-existing UUID.
+            pub const fn from_uuid(u: Uuid) -> Self {
+                Self(u)
+            }
+
+            /// Unwrap to the underlying UUID.
+            pub const fn as_uuid(self) -> Uuid {
+                self.0
+            }
+        }
+
+        impl From<Uuid> for $name {
+            fn from(u: Uuid) -> Self {
+                Self(u)
+            }
+        }
+
+        impl From<$name> for Uuid {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = uuid::Error;
+
+            fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+                Ok(Self(Uuid::from_str(s)?))
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
+}
+
+branded_uuid! {
+    /// Device identity (UUIDv4, assigned at first registration).
+    ///
+    /// Carries the device through registration, config pull, telemetry, and the
+    /// WebSocket stream; the controller's device store is keyed by this type.
+    DeviceId
+}
+
+branded_uuid! {
+    /// Tenant identity (UUIDv4). The multi-tenancy isolation boundary.
+    OrgId
+}
+
+branded_uuid! {
+    /// Site identity within an org (UUIDv4).
+    SiteId
+}
+
+branded_uuid! {
+    /// Tunnel identity (UUIDv4, assigned by the controller).
+    ///
+    /// Reserved for the P1 data plane, where tunnels are keyed by ID; the P0
+    /// wire format deliberately carries no tunnel ID field (matches
+    /// `api-spec.yaml`).
+    TunnelId
+}
+
+branded_uuid! {
+    /// Logical interface identity (UUIDv4, assigned by the controller).
+    ///
+    /// Reserved for the P1 data plane; the P0 wire format deliberately carries
+    /// no interface ID field (matches `api-spec.yaml`).
+    InterfaceId
+}
+
 /// Monotonic per-device configuration version.
 ///
-/// The controller increments on every successful push; the agent keeps a `version` in
-/// its own `DeviceConfig` and only accepts new configs where `new.version > current.version`
-/// (optimistic locking). A failed verify does NOT bump the version.
-pub type ConfigVersion = u64;
+/// The controller issues monotonically increasing versions on every successful
+/// push; the agent mirrors the pushed revision and refuses any config whose
+/// version is not strictly greater than its current one (optimistic locking).
+/// A failed verify does NOT bump the version.
+///
+/// Serde is `#[serde(transparent)]` — the wire format is a plain integer, unchanged.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
+    Serialize, Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(transparent)]
+pub struct ConfigVersion(u64);
+
+impl ConfigVersion {
+    /// Wrap a raw `u64` version counter.
+    pub const fn new(v: u64) -> Self {
+        Self(v)
+    }
+
+    /// Unwrap to the raw counter.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for ConfigVersion {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<ConfigVersion> for u64 {
+    fn from(v: ConfigVersion) -> Self {
+        v.0
+    }
+}
+
+impl std::fmt::Display for ConfigVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Bootstrap token the agent presents to the controller.
+///
+/// Wrapped so it can never be confused with a device/org ID and so accidental
+/// `Display`-based logging (which would leak the secret) is a compile error —
+/// the only way to read it is the explicit [`BootstrapToken::as_str`]. Never
+/// log this value (see AGENTS.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct BootstrapToken(String);
+
+impl BootstrapToken {
+    /// Wrap a raw token string.
+    pub fn new(t: impl Into<String>) -> Self {
+        Self(t.into())
+    }
+
+    /// Explicit accessor — the ONLY way to read the token.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for BootstrapToken {
+    fn from(t: String) -> Self {
+        Self(t)
+    }
+}
+
+impl From<&str> for BootstrapToken {
+    fn from(t: &str) -> Self {
+        Self(t.to_string())
+    }
+}
 
 /// Logical underlay/overlay link class (flexiWAN §10 — Path Labels).
 ///
 /// Path labels carry SLA expectations that the link monitor + path selection engine
 /// later consume. They are deliberately side-effect-free here.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PathLabel {
     /// Stable identifier (UUIDv4 generated by the controller).
     pub id: Uuid,
@@ -76,7 +245,8 @@ pub struct PathLabel {
 }
 
 /// Physical/transport category of a path label.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PathLabelKind {
     /// MPLS / private backbone.
@@ -94,8 +264,157 @@ pub enum PathLabelKind {
     Other,
 }
 
+/// Top-level tenant (flexiWAN §1 — Management Core).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Org {
+    /// Org identity (UUIDv4, branded [`OrgId`]).
+    pub id: OrgId,
+    /// Human-readable display name (unique within the controller).
+    pub name: String,
+    /// Unix epoch seconds the org was created.
+    pub created_at: u64,
+}
+
+/// Site within an org (flexiWAN §1 — Org/Site/Device hierarchy).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Site {
+    /// Site identity (UUIDv4, branded [`SiteId`]).
+    pub id: SiteId,
+    /// Owning org (branded [`OrgId`]).
+    pub org_id: OrgId,
+    /// Site display name (unique within the org).
+    pub name: String,
+    /// Unix epoch seconds.
+    pub created_at: u64,
+}
+
+/// Device record (flexiWAN §1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Device {
+    /// Device identity (UUIDv4, branded [`DeviceId`]).
+    pub id: DeviceId,
+    /// Owning org (multi-tenant boundary, branded [`OrgId`]).
+    pub org_id: OrgId,
+    /// Owning site (branded [`SiteId`]).
+    pub site_id: SiteId,
+    /// Hostname reported at registration (unique within the org).
+    pub hostname: String,
+    /// Unix epoch seconds the device was last seen by the controller.
+    pub last_seen: u64,
+}
+
+/// RBAC role (flexiWAN §1 — Securing accounts).
+///
+/// The controller scopes mutations by role; the agent itself only carries an
+/// admin token in P0, but the enum is here for P1 NB-API authorization.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Full control including billing and member management.
+    Owner,
+    /// Manage devices, policies, and tunnels within the org.
+    Admin,
+    /// Operational changes (apply config, reload, restart services).
+    Operator,
+    /// Read-only access to dashboards and telemetry.
+    Viewer,
+}
+
+/// WireGuard X25519 public key.
+///
+/// X25519 keys are 32 bytes; base64-encoded they are exactly 44 characters
+/// (32 bytes × 4/3 rounded up + padding). Use [`PublicKey::try_from_str`] to
+/// validate before storing; [`TunnelConfig::WireGuard::public_key`] is the
+/// raw `String` field and may carry any value until the validator runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicKey(String);
+
+impl PublicKey {
+    /// Construct a validated key. Returns a structured `ValidationError` on failure.
+    pub fn try_from_str(s: &str) -> std::result::Result<Self, ValidationError> {
+        validate_public_key(s)?;
+        Ok(Self(s.to_string()))
+    }
+    /// Borrow the underlying base64 string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validate a base64-encoded X25519 public key: length exactly 44 characters
+/// and the character set limited to the standard base64 alphabet.
+pub fn validate_public_key(s: &str) -> std::result::Result<(), ValidationError> {
+    const EXPECTED_LEN: usize = 44;
+    if s.len() != EXPECTED_LEN {
+        return Err(ValidationError::PublicKeyLength {
+            actual: s.len(),
+            expected: EXPECTED_LEN,
+        });
+    }
+    for (i, b) in s.bytes().enumerate() {
+        let ok = b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=';
+        if !ok {
+            return Err(ValidationError::PublicKeyCharset {
+                position: i,
+                byte: b,
+            });
+        }
+    }
+    // base64 decode sanity (must round-trip to exactly 32 bytes).
+    use base64::Engine as _;
+    let engine = base64::engine::general_purpose::STANDARD;
+    match engine.decode(s) {
+        Ok(bytes) if bytes.len() == 32 => Ok(()),
+        Ok(other) => Err(ValidationError::PublicKeyDecodedLength { len: other.len() }),
+        Err(e) => Err(ValidationError::PublicKeyDecode(e.to_string())),
+    }
+}
+
+/// Structured validation error returned by `DeviceConfig::validate` and friends.
+#[derive(Debug, thiserror::Error)]
+pub enum ValidationError {
+    /// The public key string is not exactly 44 characters.
+    #[error("WireGuard public_key length must be {expected} chars, got {actual}")]
+    PublicKeyLength { actual: usize, expected: usize },
+    /// The public key contains a byte outside the base64 alphabet.
+    #[error("WireGuard public_key has invalid byte 0x{byte:02x} at position {position}")]
+    PublicKeyCharset { position: usize, byte: u8 },
+    /// The public key decoded to a payload that is not 32 bytes.
+    #[error("WireGuard public_key decoded to {len} bytes, expected 32")]
+    PublicKeyDecodedLength { len: usize },
+    /// The public key failed base64 decoding.
+    #[error("WireGuard public_key base64 decode failed: {0}")]
+    PublicKeyDecode(String),
+    /// A tunnel failed validation (nested in the tunnel context).
+    #[error("tunnel `{interface}`: {source}")]
+    Tunnel { interface: String, source: Box<ValidationError> },
+    /// An interface failed validation.
+    #[error("interface `{name}`: {message}")]
+    Interface { name: String, message: String },
+    /// A firewall rule failed validation.
+    #[error("firewall rule {index}: {message}")]
+    FirewallRule { index: usize, message: String },
+    /// A QoS class failed validation.
+    #[error("qos class {index}: {message}")]
+    QosClass { index: usize, message: String },
+}
+
+/// Default impl for [`HealthCheckConfig`] (the derive macro respects
+/// `#[serde(default = ...)]` only for deserialization, not the `Default` trait).
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: default_hc_interval_ms(),
+            probe_type: ProbeType::default(),
+            threshold: default_hc_threshold(),
+            timeout_ms: default_hc_timeout_ms(),
+        }
+    }
+}
+
 /// Probing policy for a link (flexiWAN §9).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HealthCheckConfig {
     /// Probe cadence in milliseconds.
     #[serde(default = "default_hc_interval_ms")]
@@ -125,7 +444,8 @@ fn default_hc_timeout_ms() -> u32 {
 }
 
 /// Probe transport used by the link monitor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeType {
     /// ICMP echo (requires `CAP_NET_RAW`; see AGENTS.md).
@@ -144,7 +464,7 @@ pub enum ProbeType {
 /// `name` matches the kernel interface label (e.g. `eth0`, `wg0`).
 /// `addresses` use RFC 5737 documentation prefixes in examples; production values
 /// come from the controller.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Interface {
     /// Kernel interface name.
     pub name: String,
@@ -163,7 +483,8 @@ pub struct Interface {
 
 /// Tunnel configuration. Currently only WireGuard is supported; the enum is shaped
 /// to make IPsec/SSTP a drop-in addition in P1.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TunnelConfig {
     /// WireGuard overlay.
@@ -175,7 +496,7 @@ pub enum TunnelConfig {
 /// `public_key` is the peer's *public* key (base64 X25519, 32 bytes). Private keys are
 /// never exchanged via this struct — they are generated on-device and kept in
 /// `0600` files only (see AGENTS.md).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WireGuardTunnel {
     /// Tunnel interface name (e.g. `wg0`).
     pub interface: String,
@@ -193,12 +514,23 @@ pub struct WireGuardTunnel {
     /// Allowed remote IPs for the peer's side of the tunnel.
     pub allowed_ips: Vec<IpAddr>,
 
-    /// Base64 X25519 public key (44 chars including padding).
+    /// Base64 X25519 public key — 44 chars; validated by [`DeviceConfig::validate`].
     pub public_key: String,
 }
 
+impl WireGuardTunnel {
+    /// Validate this tunnel's `public_key` against the X25519 base64 contract.
+    pub fn validate(&self) -> std::result::Result<(), ValidationError> {
+        validate_public_key(&self.public_key)
+            .map_err(|e| ValidationError::Tunnel {
+                interface: self.interface.clone(),
+                source: Box::new(e),
+            })
+    }
+}
+
 /// Static route entry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Route {
     /// Destination prefix (CIDR).
     pub destination: String,
@@ -216,7 +548,7 @@ fn default_metric() -> u32 {
 }
 
 /// Firewall policy (P0: skeleton, P1 wires the nftables render).
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FirewallPolicy {
     /// Ordered list of rules; first match wins.
     #[serde(default)]
@@ -225,7 +557,7 @@ pub struct FirewallPolicy {
 
 /// Single firewall rule (flexiWAN §7). First match in `FirewallPolicy.rules`
 /// wins; rules with `None` match-conditions apply to any traffic.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FirewallRule {
     /// Verdict on match.
     pub action: FirewallAction,
@@ -247,7 +579,8 @@ pub struct FirewallRule {
 }
 
 /// Firewall verdict (flexiWAN §7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FirewallAction {
     /// Forward matching traffic.
@@ -259,7 +592,7 @@ pub enum FirewallAction {
 }
 
 /// QoS policy (P0: skeleton, P1 wires HTB/TC).
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QosPolicy {
     /// Ordered QoS classes (top match wins).
     #[serde(default)]
@@ -268,7 +601,7 @@ pub struct QosPolicy {
 
 /// QoS class (flexiWAN §12). One row per traffic class; the controller
 /// emits HTB/TC + DSCP rules from these.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QosClass {
     /// Class name (e.g. `voip`, `data`).
     pub name: String,
@@ -283,16 +616,16 @@ pub struct QosClass {
 ///
 /// Optimistic-locking via `version`: an agent MUST refuse any `DeviceConfig` whose
 /// `version` is not strictly greater than its own current version.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeviceConfig {
-    /// Device identity (UUIDv4 assigned at first registration).
-    pub device_id: Uuid,
+    /// Device identity (UUIDv4, branded [`DeviceId`]).
+    pub device_id: DeviceId,
 
-    /// Owning org (multi-tenant isolation boundary).
-    pub org_id: Uuid,
+    /// Owning org (multi-tenant isolation boundary, branded [`OrgId`]).
+    pub org_id: OrgId,
 
-    /// Site within the org (flexiWAN §1 — Org/Site/Device hierarchy).
-    pub site_id: Uuid,
+    /// Site within the org (flexiWAN §1 — Org/Site/Device hierarchy, branded [`SiteId`]).
+    pub site_id: SiteId,
 
     /// Hostname reported by the device at registration.
     pub hostname: String,
@@ -315,24 +648,115 @@ pub struct DeviceConfig {
     /// Path labels declared on this device.
     pub path_labels: Vec<PathLabel>,
 
-    /// Monotonic version — bumped by the controller on every push.
+    /// Monotonic version — issued by the controller on every push.
     pub version: ConfigVersion,
 }
 
 impl DeviceConfig {
-    /// Bump the version counter, returning a new config.
-    ///
-    /// Agents call this only inside the `commit` step of a successful transactional
-    /// apply (see `sdwan-agent::Agent::apply_config`). Verify failure MUST NOT
-    /// call this.
-    pub fn with_bumped_version(mut self) -> Self {
-        self.version = self.version.saturating_add(1);
-        self
+    /// Validate invariants the controller cannot trust on the wire:
+    /// tunnel public keys (44-char X25519), interface name non-empty,
+    /// firewall rule port range, QoS DSCP 0..=63.
+    pub fn validate(&self) -> std::result::Result<(), ValidationError> {
+        for iface in &self.interfaces {
+            if iface.name.is_empty() {
+                return Err(ValidationError::Interface {
+                    name: iface.name.clone(),
+                    message: "interface name must not be empty".into(),
+                });
+            }
+            for a in &iface.addresses {
+                if a.is_unspecified() {
+                    return Err(ValidationError::Interface {
+                        name: iface.name.clone(),
+                        message: format!("address {a} is unspecified"),
+                    });
+                }
+            }
+        }
+        for t in &self.tunnels {
+            match t {
+                TunnelConfig::WireGuard(w) => w.validate()?,
+            }
+        }
+        for (i, r) in self.firewall.rules.iter().enumerate() {
+            if let Some(p) = r.port {
+                if p == 0 {
+                    return Err(ValidationError::FirewallRule {
+                        index: i,
+                        message: "port must be > 0".into(),
+                    });
+                }
+            }
+        }
+        for (i, c) in self.qos.classes.iter().enumerate() {
+            if c.dscp > 63 {
+                return Err(ValidationError::QosClass {
+                    index: i,
+                    message: format!("dscp {} exceeds 63", c.dscp),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// True iff `other.version > self.version`.
     pub fn is_strictly_newer_than(&self, other: &Self) -> bool {
         self.version > other.version
+    }
+
+    /// Bump the version counter, returning a new config.
+    ///
+    /// The controller uses this when minting the next revision: every push
+    /// must carry a strictly higher version (optimistic locking). Agents do
+    /// NOT call this — they mirror the pushed revision as-is.
+    pub fn with_bumped_version(mut self) -> Self {
+        self.version = ConfigVersion::new(self.version.as_u64().saturating_add(1));
+        self
+    }
+}
+
+/// A [`DeviceConfig`] that has passed [`DeviceConfig::validate`].
+///
+/// Type-level guarantee: this wrapper is the only way the apply path receives a
+/// config. There is no blanket `From<DeviceConfig>` escape hatch — the explicit
+/// [`ValidatedConfig::validate`] (or the equivalent [`TryFrom`] impl) is the sole
+/// constructor, so an unvalidated config cannot reach `apply` at compile time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedConfig(DeviceConfig);
+
+impl ValidatedConfig {
+    /// Run [`DeviceConfig::validate`] and wrap the config on success.
+    pub fn validate(cfg: DeviceConfig) -> std::result::Result<Self, ValidationError> {
+        cfg.validate()?;
+        Ok(Self(cfg))
+    }
+
+    /// Unwrap to the inner config (used by the commit step of a transactional apply).
+    pub fn into_inner(self) -> DeviceConfig {
+        self.0
+    }
+
+    /// Borrow the inner config.
+    pub fn as_ref(&self) -> &DeviceConfig {
+        &self.0
+    }
+
+    /// Mutable borrow of the inner config.
+    pub fn as_mut(&mut self) -> &mut DeviceConfig {
+        &mut self.0
+    }
+
+    /// The config's version counter.
+    pub fn version(&self) -> ConfigVersion {
+        self.0.version
+    }
+}
+
+impl TryFrom<DeviceConfig> for ValidatedConfig {
+    type Error = ValidationError;
+
+    fn try_from(cfg: DeviceConfig) -> std::result::Result<Self, Self::Error> {
+        Self::validate(cfg)
     }
 }
 
@@ -342,9 +766,9 @@ mod tests {
 
     fn sample() -> DeviceConfig {
         DeviceConfig {
-            device_id: Uuid::new_v4(),
-            org_id: Uuid::new_v4(),
-            site_id: Uuid::new_v4(),
+            device_id: DeviceId::new(),
+            org_id: OrgId::new(),
+            site_id: SiteId::new(),
             hostname: "edge-01".into(),
             interfaces: vec![Interface {
                 name: "eth0".into(),
@@ -378,17 +802,20 @@ mod tests {
                 kind: PathLabelKind::Mpls,
                 sla: "loss<0.1% rtt<10ms".into(),
             }],
-            version: 1,
+            version: ConfigVersion::new(1),
         }
     }
 
     #[test]
-    fn version_bump_and_compare() {
+    fn version_strictness() {
         let c = sample();
-        let c2 = c.clone().with_bumped_version();
-        assert!(c2.is_strictly_newer_than(&c));
-        assert!(!c.is_strictly_newer_than(&c2));
-        assert_eq!(c2.version, c.version + 1);
+        let newer = DeviceConfig {
+            version: ConfigVersion::new(2),
+            ..c.clone()
+        };
+        assert!(newer.is_strictly_newer_than(&c));
+        assert!(!c.is_strictly_newer_than(&newer));
+        assert!(!c.is_strictly_newer_than(&c));
     }
 
     #[test]
@@ -401,7 +828,8 @@ mod tests {
 
     #[test]
     fn tunnel_tag_serde() {
-        // Ensure the tagged enum produces stable, documented JSON.
+        // Ensure the tagged enum produces stable, documented JSON (no id field —
+        // matches api-spec.yaml WireGuardTunnel).
         let j = r#"{"kind":"wire_guard","interface":"wg0","path_label":"X","health_check":{"interval_ms":1000,"probe_type":"icmp","threshold":3,"timeout_ms":500},"endpoint":"203.0.113.7:51820","allowed_ips":["198.51.100.1"],"public_key":"A"}"#;
         let t: TunnelConfig = serde_json::from_str(j).unwrap();
         match t {

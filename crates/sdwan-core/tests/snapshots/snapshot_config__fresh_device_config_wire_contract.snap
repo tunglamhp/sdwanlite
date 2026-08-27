@@ -1,0 +1,21 @@
+---
+source: crates/sdwan-core/tests/snapshot_config.rs
+expression: cfg
+---
+{
+  "device_id": "00000000-0000-0000-0000-000000000001",
+  "org_id": "00000000-0000-0000-0000-000000000002",
+  "site_id": "00000000-0000-0000-0000-000000000003",
+  "hostname": "edge-snapshot",
+  "interfaces": [],
+  "tunnels": [],
+  "routes": [],
+  "firewall": {
+    "rules": []
+  },
+  "qos": {
+    "classes": []
+  },
+  "path_labels": [],
+  "version": 1
+}

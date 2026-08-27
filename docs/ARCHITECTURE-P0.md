@@ -49,11 +49,21 @@ flowchart LR
 
 * `DeviceConfig { device_id, org_id, site_id, hostname, interfaces, tunnels,
   routes, firewall, qos, path_labels, version }`
+* `Interface { name, addresses, mtu, path_label }`
 * `TunnelConfig::WireGuard { interface, path_label, health_check, endpoint,
   allowed_ips, public_key }` — IPsec/SSTP slot for P1
 * `PathLabel { id, name, type: Mpls|Internet|5G|Starlink|Lte|Other, sla }`
 * `HealthCheckConfig { interval_ms, probe_type: Icmp|Http|Dns|Tcp, threshold,
   timeout_ms }`
+* IDs are branded newtypes (`DeviceId`, `OrgId`, `SiteId`, `ConfigVersion`,
+  `BootstrapToken`): identical JSON wire format (`#[serde(transparent)]`),
+  impossible to confuse at compile time. `TunnelId` / `InterfaceId` exist as
+  P1-reserved types but carry **no wire fields** in P0 (matches
+  `api-spec.yaml`).
+* Every public enum is `#[non_exhaustive]`; every wire type derives
+  `schemars::JsonSchema` so `api-spec.yaml` can be regenerated mechanically.
+  `ValidatedConfig` wraps a config that passed `DeviceConfig::validate`; the
+  apply path only accepts that type.
 * `TunnelConfig::WireGuard::public_key` is **only the public** key. Private
   keys are generated on-device and never leave `0600` files (AGENTS.md).
 
@@ -83,15 +93,15 @@ sequenceDiagram
     participant Vfy as verify_fn (data-plane seam)
     participant Swap as ArcSwap<DeviceConfig>
 
-    Ctl->>Agt: POST /api/v1/devices/:id/apply  (config v{N+1})
+    Ctl->>Agt: push config v{N+1} (WS /stream/config)
     Agt->>Agt: snapshot = current.load()
     Agt->>Agt: reject if v{N+1} <= snapshot.version  (stale)
     Agt->>Vfy: verify(&new)
     alt verify OK
         Vfy-->>Agt: Ok(())
-        Agt->>Swap: store(new.with_bumped_version())
-        Swap-->>Agt: active v{N+2}
-        Agt-->>Ctl: ApplyOutcome { verified: true, active_version: v{N+2} }
+        Agt->>Swap: store(new)  — the pushed revision, unchanged
+        Swap-->>Agt: active v{N+1}
+        Agt-->>Ctl: ApplyOutcome { verified: true, active_version: v{N+1} }
     else verify Err(msg)
         Vfy-->>Agt: Err(msg)
         Note over Agt,Swap: snapshot stays live; no bump
@@ -101,8 +111,10 @@ sequenceDiagram
 
 **Invariants (proven by `crates/sdwan-agent/tests/transactional_apply.rs`):**
 
-* `verify_fn` returning `Ok(())`  → new config becomes active, `version+1`,
-  `active_version == new_version`.
+* `verify_fn` returning `Ok(())`  → new config becomes active at the pushed
+  revision, `active_version == new_version`. Versions are controller-owned:
+  the controller mints strictly increasing revisions; the agent mirrors them
+  exactly (no side-band bump — a second push is never silently dropped).
 * `verify_fn` returning `Err(_)`  → snapshot stays live, `version` unchanged,
   old config remains active.
 * Stale `new.version <= current.version` is rejected **before** `verify_fn`
@@ -118,7 +130,7 @@ sequenceDiagram
 | HTTP transport | `http://127.0.0.1:8080`                  | loopback default per AGENTS.md |
 | Auth header    | `Authorization: Bearer <bootstrap_token>` | constant-time compare in controller |
 | Token storage  | `--bootstrap-token-file <path>`          | file must be mode `0600` (verified at startup on Unix); never echoed |
-| WebSocket      | `ws://127.0.0.1:8080/stream/config`      | bearer sent as first text frame; server pushes deltas |
+| WebSocket      | `ws://127.0.0.1:8080/stream/config?device_id=<uuid>` | bearer via `Authorization` header on the upgrade request (RFC 6455 handshake built with `IntoClientRequest`); server pushes deltas |
 | Examples       | RFC 5737 (`192.0.2.x`, `198.51.100.x`, `203.0.113.7`) | no real IPs |
 | Multi-tenant   | every resource carries `org_id`/`site_id` | controller rejects cross-tenant apply/telemetry |
 | Error hygiene  | `ErrorBody { error: <code>, message: "see server logs" }` | the code branch is stable; full error never echoed (avoids leaking endpoints/tokens) |
@@ -228,7 +240,8 @@ billing stub.
 ```bash
 cargo check -p sdwan-core
 cargo check -p sdwan-agent
-cargo test  -p sdwan-agent    # 4 tests pass
+cargo test  -p sdwan-agent    # unit + integration + property + snapshot tests
+cargo test  -p sdwan-core     # serde roundtrips + proptest property tests
 
 # Agent (loopback controller):
 cargo run -p sdwan-agent -- --mode controller \

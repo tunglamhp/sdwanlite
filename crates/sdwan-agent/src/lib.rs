@@ -20,7 +20,7 @@ pub mod controller;
 pub mod error;
 pub mod telemetry;
 
-pub use agent::{Agent, AgentConfig, ApplyOutcome, VerifyFn};
+pub use agent::{Agent, AgentConfig, ApplyOutcome, ApplyState, VerifyFn};
 pub use controller::{
     router as controller_router, ApplyRequest, ApplyResponse, DeviceRecord, DeviceStore,
     RegisterRequest, RegisterResponse,

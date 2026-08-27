@@ -1,0 +1,11 @@
+---
+source: crates/sdwan-agent/tests/snapshot_api.rs
+expression: parsed
+---
+{
+  "device_id": "[uuid]",
+  "org_id": "[uuid]",
+  "site_id": "[uuid]",
+  "current_version": 1,
+  "stream_url": "ws://127.0.0.1:8080/stream/config"
+}

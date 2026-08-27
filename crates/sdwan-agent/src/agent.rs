@@ -15,20 +15,21 @@
 use crate::error::{AgentError, Result};
 use crate::telemetry::TelemetryFrame;
 use arc_swap::ArcSwap;
-use futures_util::{SinkExt, StreamExt};
-use sdwan_core::{ConfigVersion, DeviceConfig};
+use futures_util::StreamExt;
+use sdwan_core::{
+    BootstrapToken, ConfigVersion, DeviceConfig, DeviceId, OrgId, SiteId, ValidatedConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 /// Verify callback contract.
 ///
 /// Called after a tentative `apply` step but before commit. Returning `Ok(())`
-/// authorises the agent to make the new config active and bump the version.
-/// Returning `Err(msg)` triggers rollback to the previous config WITHOUT bumping
-/// the version (see `Agent::apply_config`).
+/// authorises the agent to make the new config active. Returning `Err(msg)`
+/// triggers rollback to the previous config WITHOUT bumping the version (see
+/// `Agent::apply_config`).
 ///
 /// The callback is intentionally a boxed `Fn` so production code can hand the
 /// agent a closure that talks to `sdwanlite-overlay`, `sdwanlite-routing`, etc.,
@@ -41,13 +42,13 @@ pub struct AgentConfig {
     /// Controller base URL (RFC 5737 example: `http://127.0.0.1:8080`).
     pub controller_url: String,
     /// Bootstrap token. NEVER echoed back, NEVER logged (see AGENTS.md).
-    pub bootstrap_token: String,
-    /// Device identity (UUIDv4, generated once and persisted on-device).
-    pub device_id: Uuid,
-    /// Owning org (multi-tenant scope).
-    pub org_id: Uuid,
-    /// Site within the org.
-    pub site_id: Uuid,
+    pub bootstrap_token: BootstrapToken,
+    /// Device identity (UUIDv4, branded [`DeviceId`]).
+    pub device_id: DeviceId,
+    /// Owning org (multi-tenant scope, branded [`OrgId`]).
+    pub org_id: OrgId,
+    /// Site within the org (branded [`SiteId`]).
+    pub site_id: SiteId,
     /// Hostname reported at registration.
     pub hostname: String,
     /// Telemetry push cadence.
@@ -59,10 +60,10 @@ impl AgentConfig {
     /// (loopback-only by default; callers must explicitly opt into non-loopback).
     pub fn new(
         controller_url: impl Into<String>,
-        bootstrap_token: impl Into<String>,
-        device_id: Uuid,
-        org_id: Uuid,
-        site_id: Uuid,
+        bootstrap_token: impl Into<BootstrapToken>,
+        device_id: DeviceId,
+        org_id: OrgId,
+        site_id: SiteId,
         hostname: impl Into<String>,
     ) -> std::result::Result<Self, AgentError> {
         let url = controller_url.into();
@@ -88,7 +89,7 @@ impl AgentConfig {
 }
 
 /// Result of an `apply_config` call (used by tests + dashboards).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApplyOutcome {
     pub new_version: ConfigVersion,
     pub verified: bool,
@@ -100,13 +101,36 @@ pub struct ApplyOutcome {
     pub error: Option<String>,
 }
 
+/// Lifecycle state of the transactional apply (snapshot → apply → verify →
+/// commit / rollback). Mirrors `docs/ARCHITECTURE-P0.md`; dashboards and the
+/// controller poll it via [`Agent::apply_state`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyState {
+    /// No apply in flight; waiting for a config push or an explicit call.
+    #[default]
+    Idle,
+    /// Incoming config is being validated (staleness gate + type-level invariants).
+    Validating,
+    /// Tentative apply in progress (the data-plane seam runs here).
+    Applying,
+    /// Post-apply verification (`verify_fn`) is running.
+    Verifying,
+    /// Verification passed; new version committed as active.
+    Committed,
+    /// Verification failed; previous config left active, version NOT bumped.
+    RolledBack,
+}
+
 /// The on-device agent.
 pub struct Agent {
     cfg: AgentConfig,
     /// Hot-swap atomic of the current config. P1 watches this from the data plane.
-    current: Arc<ArcSwap<DeviceConfig>>, // visible to tests in this crate; tests in tests/ use agent.current().store via pub fn below
+    current: Arc<ArcSwap<DeviceConfig>>,
     /// Pending verify fn installed by `apply_config`.
     verify: Mutex<Option<Arc<VerifyFn>>>,
+    /// Apply lifecycle state (see [`ApplyState`]).
+    state: Mutex<ApplyState>,
 }
 
 impl Agent {
@@ -124,12 +148,13 @@ impl Agent {
             firewall: sdwan_core::FirewallPolicy::default(),
             qos: sdwan_core::QosPolicy::default(),
             path_labels: Vec::new(),
-            version: 0,
+            version: ConfigVersion::new(0),
         };
         Ok(Self {
             cfg,
             current: Arc::new(ArcSwap::from_pointee(placeholder)),
             verify: Mutex::new(None),
+            state: Mutex::new(ApplyState::Idle),
         })
     }
 
@@ -138,9 +163,8 @@ impl Agent {
         self.current.load_full().as_ref().clone()
     }
 
-    /// Test/internal seam — set the active config directly. Production code uses
-    /// ; this exists so integration tests can stage an initial
-    /// config without going through register().
+    /// Test/internal seam — set the active config directly (integration tests
+    /// stage an initial config without going through register()).
     #[doc(hidden)]
     pub fn set_current_for_test(&self, cfg: DeviceConfig) {
         self.current.store(Arc::new(cfg));
@@ -149,6 +173,11 @@ impl Agent {
     /// Install the verify callback. P1 wires a closure that talks to the data plane.
     pub async fn set_verify(&self, f: VerifyFn) {
         *self.verify.lock().await = Some(Arc::new(f));
+    }
+
+    /// Current apply lifecycle state.
+    pub async fn apply_state(&self) -> ApplyState {
+        *self.state.lock().await
     }
 
     /// POST `/api/v1/devices/register`. Idempotent: returns Ok even if already
@@ -162,10 +191,16 @@ impl Agent {
             "hostname": self.cfg.hostname,
             "version": 1,
         });
-        // Use the reqwest-free http path? P0 keeps deps minimal — we hand-roll a
-        // minimal POST via tokio-tungstenite + a future http upgrade. Simpler: depend
-        // on reqwest (already in workspace for acme). Add to workspace deps.
-        let resp = self.http_post_json(&url, &body).await?;
+        // Hand-rolled HTTP/1.1 over TCP — P0 keeps the dependency surface small
+        // (no reqwest); the controller is loopback-only at this stage.
+        let (status, _resp) = self.http_post_json(&url, &body).await?;
+        // Idempotent registration: 2xx = registered now, 409 = already
+        // registered. Anything else is an error.
+        if !(200..300).contains(&status) && status != 409 {
+            return Err(AgentError::Http(format!(
+                "register: unexpected status {status}"
+            )));
+        }
         // Pull the latest config from the controller — it may have a non-trivial
         // starting point the controller wants us to apply.
         let cfg_url = format!(
@@ -174,44 +209,52 @@ impl Agent {
         );
         let cfg: DeviceConfig = self.http_get_json(&cfg_url).await?;
         self.current.store(Arc::new(cfg.clone()));
-        // Discard body of register — we already have what we need from /config.
-        let _ = resp;
         Ok(cfg)
     }
 
-    /// Transactional apply: snapshot → verify → commit / rollback.
+    /// Transactional apply: snapshot → validate → apply → verify → commit / rollback.
     ///
     /// Contract (P0):
     ///   1. **Snapshot** — clone `current`.
-    ///   2. **Refuse** if `new.version <= snapshot.version` (optimistic locking).
-    ///   3. **Verify** — call the registered `verify_fn(&new)`. On `Err`, return
-    ///      `ApplyOutcome { verified: false, active_version: snapshot.version,
-    ///      error: Some(msg) }` WITHOUT touching the swap. The previous config
-    ///      remains active.
-    ///   4. **Commit** — bump `new.version` and store via `ArcSwap::store`. Return
-    ///      `ApplyOutcome { verified: true, active_version: new.version, .. }`.
-    pub async fn apply_config(&self, new: DeviceConfig) -> ApplyOutcome {
+    ///   2. **Refuse** if `new.version <= snapshot.version` (optimistic locking);
+    ///      state returns to [`ApplyState::Idle`] with nothing applied.
+    ///   3. **Apply/Verify** — call the registered `verify_fn(&new)`. On `Err`,
+    ///      return `ApplyOutcome { verified: false, active_version: snapshot.version,
+    ///      error: Some(msg) }` WITHOUT touching the swap and set
+    ///      [`ApplyState::RolledBack`]. The previous config remains active.
+    ///   4. **Commit** — store the verified `new` config as active (the version
+    ///      is the controller-issued revision, unchanged); set
+    ///      [`ApplyState::Committed`].
+    ///
+    /// The caller hands in a [`ValidatedConfig`] — the type system guarantees
+    /// structural validation already passed before this function runs.
+    pub async fn apply_config(&self, new: ValidatedConfig) -> ApplyOutcome {
+        *self.state.lock().await = ApplyState::Validating;
         let snapshot = self.current();
-        if !new.is_strictly_newer_than(&snapshot) {
+        if !new.as_ref().is_strictly_newer_than(&snapshot) {
+            *self.state.lock().await = ApplyState::Idle;
             return ApplyOutcome {
-                new_version: new.version,
+                new_version: new.version(),
                 verified: false,
                 active_version: snapshot.version,
                 error: Some(format!(
                     "stale: incoming v{} <= active v{}",
-                    new.version, snapshot.version
+                    new.version(),
+                    snapshot.version
                 )),
             };
         }
-        // Verify step.
+        // Tentative apply + verify step.
+        *self.state.lock().await = ApplyState::Applying;
         let verify = self.verify.lock().await.clone();
         match verify {
             None => {
                 // No verifier installed → for P0 we accept the apply unconditionally
                 // (the caller is responsible for verifying externally). This makes
                 // the data plane pluggable.
-                let committed = new.clone().with_bumped_version();
+                let committed = new.into_inner();
                 self.current.store(Arc::new(committed.clone()));
+                *self.state.lock().await = ApplyState::Committed;
                 ApplyOutcome {
                     new_version: committed.version,
                     verified: true,
@@ -219,28 +262,33 @@ impl Agent {
                     error: None,
                 }
             }
-            Some(f) => match f(&new) {
-                Ok(()) => {
-                    let committed = new.clone().with_bumped_version();
-                    self.current.store(Arc::new(committed.clone()));
-                    ApplyOutcome {
-                        new_version: committed.version,
-                        verified: true,
-                        active_version: committed.version,
-                        error: None,
+            Some(f) => {
+                *self.state.lock().await = ApplyState::Verifying;
+                match f(new.as_ref()) {
+                    Ok(()) => {
+                        let committed = new.into_inner();
+                        self.current.store(Arc::new(committed.clone()));
+                        *self.state.lock().await = ApplyState::Committed;
+                        ApplyOutcome {
+                            new_version: committed.version,
+                            verified: true,
+                            active_version: committed.version,
+                            error: None,
+                        }
+                    }
+                    Err(msg) => {
+                        // Rollback: do NOT touch `self.current`. The snapshot is still live.
+                        tracing::warn!(error = %msg, version = %new.version(), "verify failed; rolling back");
+                        *self.state.lock().await = ApplyState::RolledBack;
+                        ApplyOutcome {
+                            new_version: new.version(),
+                            verified: false,
+                            active_version: snapshot.version,
+                            error: Some(msg),
+                        }
                     }
                 }
-                Err(msg) => {
-                    // Rollback: do NOT touch `self.current`. The snapshot is still live.
-                    tracing::warn!(error = %msg, version = new.version, "verify failed; rolling back");
-                    ApplyOutcome {
-                        new_version: new.version,
-                        verified: false,
-                        active_version: snapshot.version,
-                        error: Some(msg),
-                    }
-                }
-            },
+            }
         }
     }
 
@@ -248,7 +296,7 @@ impl Agent {
     /// each delta through `apply_config`. Reconnects with exponential backoff on
     /// transport failure.
     pub async fn sync_loop(&self) {
-        let ws_url = ws_url(&self.cfg.controller_url);
+        let ws_url = ws_url(&self.cfg.controller_url, self.cfg.device_id);
         let mut backoff = Duration::from_millis(500);
         loop {
             match self.ws_connect_and_drain(&ws_url).await {
@@ -265,29 +313,47 @@ impl Agent {
     }
 
     async fn ws_connect_and_drain(&self, url: &str) -> Result<()> {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(url)
+        // The controller authenticates the WebSocket upgrade via the
+        // `Authorization` header (see `check_auth` in controller.rs), so we must
+        // set it on the upgrade request itself — tokio-tungstenite lets clients
+        // set headers even though browsers cannot.
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        // `IntoClientRequest` fills the mandatory handshake headers
+        // (Sec-WebSocket-Key, Sec-WebSocket-Version, …); building the request
+        // with `http::Request::builder()` alone produces a handshake hyper
+        // rejects.
+        let mut request = url
+            .into_client_request()
+            .map_err(|e| AgentError::Websocket(e.to_string()))?;
+        request.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&format!(
+                "Bearer {}",
+                self.cfg.bootstrap_token.as_str()
+            ))
+            .map_err(|e| AgentError::Websocket(e.to_string()))?,
+        );
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
             .await
             .map_err(|e| AgentError::Websocket(e.to_string()))?;
-        // Inject the bearer token as the first text frame — the controller's WS
-        // upgrade requires it (see `check_auth` in controller.rs).
-        ws.send(tokio_tungstenite::tungstenite::protocol::Message::Text(
-            format!("Bearer {}", self.cfg.bootstrap_token),
-        ))
-        .await
-        .map_err(|e| AgentError::Websocket(e.to_string()))?;
 
         while let Some(msg) = ws.next().await {
             match msg {
                 Ok(tokio_tungstenite::tungstenite::protocol::Message::Text(t)) => {
                     match serde_json::from_str::<DeviceConfig>(&t) {
-                        Ok(cfg) => {
-                            let outcome = self.apply_config(cfg).await;
-                            tracing::info!(
-                                verified = outcome.verified,
-                                active_version = outcome.active_version,
-                                "sync_loop apply"
-                            );
-                        }
+                        Ok(cfg) => match ValidatedConfig::try_from(cfg) {
+                            Ok(validated) => {
+                                let outcome = self.apply_config(validated).await;
+                                tracing::info!(
+                                    verified = outcome.verified,
+                                    active_version = %outcome.active_version,
+                                    "sync_loop apply"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "config failed validation; skipping");
+                            }
+                        },
                         Err(e) => {
                             tracing::warn!(error = %e, "ws decode");
                         }
@@ -311,7 +377,12 @@ impl Agent {
             links: Vec::new(),
             flags: Vec::new(),
         };
-        let _ = self.http_post_json(&url, &frame).await?;
+        let (status, _) = self.http_post_json(&url, &frame).await?;
+        if !(200..300).contains(&status) {
+            return Err(AgentError::Http(format!(
+                "telemetry: unexpected status {status}"
+            )));
+        }
         Ok(())
     }
 
@@ -331,13 +402,17 @@ impl Agent {
 
     // ---- private HTTP helpers ----
 
-    async fn http_post_json<T: Serialize>(&self, url: &str, body: &T) -> Result<serde_json::Value> {
+    async fn http_post_json<T: Serialize>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> Result<(u16, serde_json::Value)> {
         use tokio::net::TcpStream;
         let req = format!(
             "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {tok}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{payload}",
             path = url_path(url),
             host = url_host(url),
-            tok = self.cfg.bootstrap_token,
+            tok = self.cfg.bootstrap_token.as_str(),
             len = serde_json::to_string(body).unwrap_or_default().len(),
             payload = serde_json::to_string(body).unwrap_or_default(),
         );
@@ -346,17 +421,18 @@ impl Agent {
         let (mut r, mut w) = tokio::io::split(stream);
         use tokio::io::AsyncWriteExt;
         w.write_all(req.as_bytes()).await.map_err(http)?;
-        w.shutdown().await.map_err(http)?;
         let mut buf = Vec::new();
         use tokio::io::AsyncReadExt;
         r.read_to_end(&mut buf).await.map_err(http)?;
         let text = String::from_utf8_lossy(&buf).into_owned();
+        let status = http_status(&text).unwrap_or(0);
         let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-        if body.is_empty() {
-            Ok(serde_json::json!({}))
+        let value = if body.is_empty() {
+            serde_json::json!({})
         } else {
-            serde_json::from_str(&body).map_err(|e| AgentError::Http(e.to_string()))
-        }
+            serde_json::from_str(&body).map_err(|e| AgentError::Http(e.to_string()))?
+        };
+        Ok((status, value))
     }
 
     async fn http_get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
@@ -365,16 +441,21 @@ impl Agent {
             "GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {tok}\r\nConnection: close\r\n\r\n",
             path = url_path(url),
             host = url_host(url),
-            tok = self.cfg.bootstrap_token,
+            tok = self.cfg.bootstrap_token.as_str(),
         );
         let stream = TcpStream::connect(url_addr(url)).await.map_err(http)?;
         let (mut r, mut w) = tokio::io::split(stream);
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         w.write_all(req.as_bytes()).await.map_err(http)?;
-        w.shutdown().await.map_err(http)?;
         let mut buf = Vec::new();
         r.read_to_end(&mut buf).await.map_err(http)?;
         let text = String::from_utf8_lossy(&buf).into_owned();
+        let status = http_status(&text).unwrap_or(0);
+        if !(200..300).contains(&status) {
+            return Err(AgentError::Http(format!(
+                "GET {url}: unexpected status {status}"
+            )));
+        }
         let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
         serde_json::from_str(&body).map_err(|e| AgentError::Http(e.to_string()))
     }
@@ -384,28 +465,38 @@ fn http(e: std::io::Error) -> AgentError {
     AgentError::Http(e.to_string())
 }
 
+/// Parse the HTTP status code from a response head (`HTTP/1.1 200 OK` → 200).
+fn http_status(text: &str) -> Option<u16> {
+    let mut it = text.lines().next()?.split_whitespace();
+    it.next()?; // HTTP/1.1
+    it.next()?.parse().ok()
+}
+
 /// Translate `http://host:port/path` → `host:port`.
 fn url_addr(url: &str) -> &str {
-    url.splitn(4, '/').nth(3).unwrap_or("127.0.0.1:8080")
+    let i = url.find("://").map(|i| i + 3).unwrap_or(0);
+    url[i..].split('/').next().unwrap_or("127.0.0.1:8080")
 }
 /// Translate `http://host:port/path` → `/path` (RFC 3986 path).
-fn url_path(url: &str) -> &str {
+fn url_path(url: &str) -> String {
     let i = url.find("://").map(|i| i + 3).unwrap_or(0);
     url[i..]
         .split_once('/')
         .map(|x| x.1)
         .map(|p| format!("/{p}"))
         .unwrap_or_else(|| "/".into())
-        .leak() as &str // P0: OK for short-lived requests
 }
 /// Translate `http://host:port/path` → `host` (no port).
 fn url_host(url: &str) -> &str {
     let i = url.find("://").map(|i| i + 3).unwrap_or(0);
     url[i..].split(':').next().unwrap_or("127.0.0.1")
 }
-/// Translate `http://host:port/path` → `ws://host:port/stream/config`.
-fn ws_url(http_url: &str) -> String {
+/// Translate `http://host:port/path` → `ws://host:port/stream/config?device_id=<id>`.
+///
+/// The `device_id` query parameter scopes the stream to one device (the
+/// controller rejects streams for unknown devices before the upgrade).
+fn ws_url(http_url: &str, device_id: DeviceId) -> String {
     let i = http_url.find("://").map(|i| i + 3).unwrap_or(0);
     let rest = &http_url[i..];
-    format!("ws://{rest}/stream/config")
+    format!("ws://{rest}/stream/config?device_id={device_id}")
 }

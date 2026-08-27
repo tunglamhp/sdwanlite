@@ -1,0 +1,7 @@
+---
+source: crates/sdwan-agent/tests/snapshot_api.rs
+expression: parsed
+---
+{
+  "accepted": true
+}

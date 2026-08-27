@@ -9,8 +9,9 @@
 //! Both modes bind loopback by default; non-loopback requires `--enable-live-actions`.
 
 use anyhow::{Context, Result};
+use sdwan_core::{DeviceId, OrgId, SiteId};
 use sdwan_agent::{
-    controller_router, Agent, AgentConfig,  DeviceStore, Result as AgentResult,
+    controller_router, Agent, AgentConfig, DeviceStore,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -182,9 +183,9 @@ async fn main() -> Result<()> {
 
 async fn run_agent(args: Args) -> Result<()> {
     let token = read_token(&args)?;
-    let device_id = args.device_id.unwrap_or_else(Uuid::new_v4);
-    let org_id = args.org_id.unwrap_or_else(Uuid::new_v4);
-    let site_id = args.site_id.unwrap_or_else(Uuid::new_v4);
+    let device_id = DeviceId::from_uuid(args.device_id.unwrap_or_else(Uuid::new_v4));
+    let org_id = OrgId::from_uuid(args.org_id.unwrap_or_else(Uuid::new_v4));
+    let site_id = SiteId::from_uuid(args.site_id.unwrap_or_else(Uuid::new_v4));
     let hostname = args
         .hostname
         .unwrap_or_else(gethostname);
@@ -199,7 +200,7 @@ async fn run_agent(args: Args) -> Result<()> {
         hostname,
     )
     .map_err(|e| anyhow::anyhow!("agent config: {e}"))?;
-    let agent = Agent::new(cfg).map_err(|e| anyhow::anyhow!("agent init: {e}"))?;
+    let agent = Arc::new(Agent::new(cfg).map_err(|e| anyhow::anyhow!("agent init: {e}"))?);
 
     tracing::info!(
         device = %agent.current().device_id,
@@ -212,7 +213,7 @@ async fn run_agent(args: Args) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("register: {e}"))?;
     // Periodic telemetry push in the background; sync_loop is the primary driver.
-    let agent_for_telemetry = agent_for_telemetry(&agent);
+    let agent_for_telemetry = agent.clone();
     tokio::spawn(async move {
         let mut t = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
@@ -224,29 +225,6 @@ async fn run_agent(args: Args) -> Result<()> {
     });
     agent.sync_loop().await;
     Ok(())
-}
-
-/// Cheap clone of an Agent via an Arc-shared handle. P0 keeps the Agent struct
-/// non-Sync; for P0 tests we share via the public methods on a `&Agent` reference
-/// captured in the spawn. This wrapper exists to make the borrow checker happy.
-fn agent_for_telemetry(_a: &Agent) -> AgentHandle {
-    AgentHandle { _priv: () }
-}
-
-/// Minimal handle used by telemetry spawn in P0 (a thin shim — the real handle
-/// will land in P1 once `Agent` carries an Arc-internals).
-#[derive(Clone)]
-struct AgentHandle {
-    _priv: (),
-}
-
-#[allow(dead_code)]
-impl AgentHandle {
-    async fn get_telemetry(&self) -> AgentResult<()> {
-        // P0 telemetry loop is wired in `main` via the spawn above — this stub
-        // keeps the type signature stable for future iterations.
-        Ok(())
-    }
 }
 
 async fn run_controller(args: Args) -> Result<()> {

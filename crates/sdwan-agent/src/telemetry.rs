@@ -6,17 +6,17 @@
 //! is the bridge; it does NOT collect raw metrics itself (flexiWAN §16 — Dashboards
 //! belongs to P3).
 
+use sdwan_core::{DeviceId, OrgId};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// One telemetry frame the agent POSTs to `/api/v1/telemetry`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TelemetryFrame {
-    /// Device identity (must match the registered device).
-    pub device_id: Uuid,
+    /// Device identity (must match the registered device, branded [`DeviceId`]).
+    pub device_id: DeviceId,
 
-    /// Owning org (multi-tenant scope).
-    pub org_id: Uuid,
+    /// Owning org (multi-tenant scope, branded [`OrgId`]).
+    pub org_id: OrgId,
 
     /// Device uptime in seconds.
     pub uptime_secs: u64,
@@ -30,7 +30,7 @@ pub struct TelemetryFrame {
 }
 
 /// Load sample for one logical link.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LinkSample {
     /// Path-label name (e.g. `MPLS-Primary`).
     pub path_label: String,
@@ -53,7 +53,7 @@ pub struct LinkSample {
 }
 
 /// Health flag surfaced by the data plane.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HealthFlag {
     /// Link is down (probe failures exceeded threshold).
@@ -64,7 +64,7 @@ pub enum HealthFlag {
 
 /// Empty helper for the `links` list.
 #[allow(dead_code)]
-pub fn empty_frame(device_id: Uuid, org_id: Uuid) -> TelemetryFrame {
+pub fn empty_frame(device_id: DeviceId, org_id: OrgId) -> TelemetryFrame {
     TelemetryFrame {
         device_id,
         org_id,
@@ -81,8 +81,8 @@ mod tests {
     #[test]
     fn serde_roundtrip() {
         let f = TelemetryFrame {
-            device_id: Uuid::new_v4(),
-            org_id: Uuid::new_v4(),
+            device_id: DeviceId::new(),
+            org_id: OrgId::new(),
             uptime_secs: 42,
             links: vec![LinkSample {
                 path_label: "MPLS".into(),

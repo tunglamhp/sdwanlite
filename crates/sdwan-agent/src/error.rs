@@ -1,6 +1,7 @@
 //! Crate-wide error type. Keeps `anyhow` free for binary glue while library callers
 //! (controller tests, integration suites) get structured errors via `thiserror`.
 
+use sdwan_core::ConfigVersion;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -9,13 +10,22 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("config version mismatch: incoming={incoming} current={current}")]
-    ConfigVersion { incoming: u64, current: u64 },
+    ConfigVersion { incoming: ConfigVersion, current: ConfigVersion },
 
     #[error("org mismatch: incoming={incoming} current={current}")]
     OrgMismatch { incoming: String, current: String },
 
     #[error("verify callback failed: {0}")]
     VerifyFailed(String),
+
+    #[error("unauthorized")]
+    Unauthorized,
+
+    #[error("device already registered")]
+    AlreadyRegistered,
+
+    #[error("not found")]
+    NotFound,
 
     #[error("storage error: {0}")]
     Storage(String),
@@ -36,6 +46,9 @@ impl IntoResponse for AgentError {
             AgentError::ConfigVersion { .. } => (StatusCode::CONFLICT, "config_version_mismatch"),
             AgentError::OrgMismatch { .. } => (StatusCode::FORBIDDEN, "org_mismatch"),
             AgentError::VerifyFailed(_) => (StatusCode::CONFLICT, "verify_failed"),
+            AgentError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            AgentError::AlreadyRegistered => (StatusCode::CONFLICT, "already_registered"),
+            AgentError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             AgentError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
             AgentError::Websocket(_) => (StatusCode::BAD_GATEWAY, "websocket_error"),
             AgentError::Http(_) => (StatusCode::BAD_GATEWAY, "upstream_error"),

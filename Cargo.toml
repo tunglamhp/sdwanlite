@@ -30,6 +30,7 @@ rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
+schemars = { version = "0.8", features = ["derive", "uuid1"] }
 arc-swap = "1"
 tokio-tungstenite = "0.24"
 rusqlite = { version = "0.32", features = ["bundled"] }

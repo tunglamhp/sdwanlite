@@ -1,0 +1,9 @@
+---
+source: crates/sdwan-agent/tests/snapshot_api.rs
+expression: parsed
+---
+{
+  "device_id": "[uuid]",
+  "applied_version": 5,
+  "verified": true
+}
