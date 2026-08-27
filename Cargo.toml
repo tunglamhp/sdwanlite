@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/sdwan-core",
+    "crates/sdwan-agent",
     "crates/lb",
     "crates/mesh",
     "crates/bgp",
@@ -27,6 +29,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 base64 = "0.22"
+uuid = { version = "1", features = ["v4", "serde"] }
+arc-swap = "1"
+tokio-tungstenite = "0.24"
+rusqlite = { version = "0.32", features = ["bundled"] }
+axum-extra = { version = "0.9", features = ["ws"] }
 
 [profile.release]
 lto = true

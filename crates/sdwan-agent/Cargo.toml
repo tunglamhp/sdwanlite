@@ -1,0 +1,35 @@
+[package]
+name = "sdwan-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Control-plane agent + in-process controller stub for sdwanlite (P0)"
+
+[lib]
+name = "sdwan_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sdwan-agent"
+path = "src/main.rs"
+
+[dependencies]
+sdwan-core = { path = "../sdwan-core" }
+
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+uuid = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+arc-swap = { workspace = true }
+futures-util = "0.3"
+rusqlite = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
