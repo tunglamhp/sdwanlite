@@ -548,10 +548,54 @@ pub struct Policy {
 
 impl Policy {
     /// Evaluate: first matching rule wins, else default action.
+    /// True when `ip` falls inside the `cidr` network (same address family).
+    pub fn cidr_contains(cidr: &str, ip: &str) -> bool {
+        let Some((net, plen)) = cidr.split_once('/') else {
+            return false;
+        };
+        let (Ok(net_ip), Ok(ip)) = (
+            net.parse::<std::net::IpAddr>(),
+            ip.parse::<std::net::IpAddr>(),
+        ) else {
+            return false;
+        };
+        if std::mem::discriminant(&net_ip) != std::mem::discriminant(&ip) {
+            return false;
+        }
+        let Ok(plen) = plen.parse::<u32>() else {
+            return false;
+        };
+        let max = if net_ip.is_ipv4() { 32 } else { 128 };
+        if plen > max {
+            return false;
+        }
+        match (net_ip, ip) {
+            (std::net::IpAddr::V4(n), std::net::IpAddr::V4(i)) => {
+                let mask = if plen == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - plen)
+                };
+                (u32::from(n) & mask) == (u32::from(i) & mask)
+            }
+            (std::net::IpAddr::V6(n), std::net::IpAddr::V6(i)) => {
+                let mask = if plen == 0 {
+                    0u128
+                } else {
+                    u128::MAX << (128 - plen)
+                };
+                (u128::from(n) & mask) == (u128::from(i) & mask)
+            }
+            _ => false,
+        }
+    }
+
     pub fn evaluate(
         &self,
         app: Option<&str>,
         protocol: Option<&str>,
+        src_prefix: Option<&str>,
+        dst_prefix: Option<&str>,
         dst_port: Option<u16>,
     ) -> &RouteAction {
         for r in &self.rules {
@@ -563,6 +607,18 @@ impl Policy {
             }
             if let Some(pr) = &m.protocol {
                 if Some(pr.as_str()) != protocol {
+                    continue;
+                }
+            }
+            if let Some(sp) = &m.src_prefix {
+                let hit = src_prefix.is_some_and(|traffic_ip| Self::cidr_contains(sp, traffic_ip));
+                if !hit {
+                    continue;
+                }
+            }
+            if let Some(dp) = &m.dst_prefix {
+                let hit = dst_prefix.is_some_and(|traffic_ip| Self::cidr_contains(dp, traffic_ip));
+                if !hit {
                     continue;
                 }
             }
@@ -637,14 +693,14 @@ mod path_policy_tests {
     fn evaluate_matches_rule_then_default() {
         let p = sample_policy();
         assert_eq!(
-            p.evaluate(Some("voip"), None, None).labels,
+            p.evaluate(Some("voip"), None, None, None, None).labels,
             vec!["MPLS".to_string()]
         );
         assert_eq!(
-            p.evaluate(Some("video"), None, None).labels,
+            p.evaluate(Some("video"), None, None, None, None).labels,
             vec!["ISP1".to_string(), "LTE".to_string()]
         );
-        assert_eq!(p.evaluate(None, None, None), &p.default_action);
+        assert_eq!(p.evaluate(None, None, None, None, None), &p.default_action);
     }
 
     #[test]
@@ -662,6 +718,41 @@ mod path_policy_tests {
         p.rules.remove(0);
         p.default_action.labels.clear();
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn evaluate_matches_src_dst_prefix() {
+        let mut p = sample_policy();
+        p.rules.push(PolicyRule {
+            r#match: RuleMatch {
+                src_prefix: Some("10.0.0.0/8".into()),
+                dst_prefix: Some("192.168.1.0/24".into()),
+                ..Default::default()
+            },
+            action: action(&["LTE"], SelectionOrder::PriorityFailover),
+        });
+        p.rules.push(PolicyRule {
+            r#match: RuleMatch {
+                protocol: Some("udp".into()),
+                dst_port: Some(53),
+                ..Default::default()
+            },
+            action: action(&["ISP1"], SelectionOrder::LoadBalance),
+        });
+        assert_eq!(
+            p.evaluate(None, None, Some("10.1.2.3"), Some("192.168.1.50"), None)
+                .labels,
+            vec!["LTE".to_string()]
+        );
+        assert_eq!(
+            p.evaluate(None, Some("udp"), None, None, Some(53)).labels,
+            vec!["ISP1".to_string()]
+        );
+        // src matches but dst does not -> falls through to default
+        assert_eq!(
+            p.evaluate(None, None, Some("10.1.2.3"), Some("10.9.9.9"), None),
+            &p.default_action
+        );
     }
 
     #[test]

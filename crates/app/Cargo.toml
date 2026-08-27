@@ -8,6 +8,9 @@ license.workspace = true
 name = "sdwanlited"
 path = "src/main.rs"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
 [dependencies]
 sdwanlite-core = { path = "../core" }
 sdwanlite-lb = { path = "../lb" }

@@ -1,8 +1,7 @@
 //! sdwanlite daemon: wires config, load balancers, mesh and BGP together.
 
-mod server;
-
 use anyhow::{Context, Result};
+use sdwanlite_app::server;
 use sdwanlite_bgp::BgpSpeaker;
 use sdwanlite_core::Config;
 use std::sync::Arc;
@@ -35,16 +34,13 @@ async fn main() -> Result<()> {
     }
     let auth_env_set = std::env::var("SDWANLITE_AUTH_USER").is_ok()
         && std::env::var("SDWANLITE_AUTH_PASS").is_ok();
+    if let Err(msg) =
+        sdwanlite_app::validate_bind_auth(config.general.api_addr.as_str(), auth_env_set)
+    {
+        eprintln!("FATAL: {msg}");
+        std::process::exit(1);
+    }
     if !auth_env_set {
-        let api = config.general.api_addr.as_str();
-        let loopback = api == "127.0.0.1" || api == "::1" || api == "localhost";
-        if !loopback {
-            eprintln!(
-                "FATAL: api_addr = {api} (non-loopback) but SDWANLITE_AUTH_USER/PASS are not set. \
-                Refusing to expose an unauthenticated control API. Set the auth env vars or bind to 127.0.0.1."
-            );
-            std::process::exit(1);
-        }
         tracing::warn!(
             "SDWANLITE_AUTH_USER/PASS not set — dashboard API is open (dev mode, loopback only)"
         );
