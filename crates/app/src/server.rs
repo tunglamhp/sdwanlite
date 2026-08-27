@@ -877,17 +877,33 @@ fn resolve_token(state: &AppState) -> Option<String> {
 }
 
 fn authorized(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
-    let Some(token) = resolve_token(state) else {
-        return true;
-    };
-    let expected = format!("Bearer {token}");
-    match headers
+    let Some(provided) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-    {
-        Some(provided) => ct_eq(provided.as_bytes(), expected.as_bytes()),
-        None => false,
+    else {
+        return false;
+    };
+    // Bearer token (script access) — env overrides config.
+    if let Some(token) = resolve_token(state) {
+        let expected = format!("Bearer {token}");
+        if ct_eq(provided.as_bytes(), expected.as_bytes()) {
+            return true;
+        }
     }
+    // Basic admin credentials (browser UI) — same source as the middleware.
+    let user = std::env::var("SDWANLITE_AUTH_USER").unwrap_or_default();
+    let pass = std::env::var("SDWANLITE_AUTH_PASS").unwrap_or_default();
+    if !user.is_empty() && !pass.is_empty() {
+        use base64::Engine as _;
+        let expected = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        );
+        if ct_eq(provided.as_bytes(), expected.as_bytes()) {
+            return true;
+        }
+    }
+    false
 }
 
 async fn api_add_backend(
