@@ -1,1 +1,268 @@
-{"dashboard": {"title": "SDWANLite", "uid": "sdwanlite", "schemaVersion": 39, "time": {"from": "now-1h", "to": "now"}, "panels": [{"type": "timeseries", "title": "Backend health", "gridPos": {"h": 7, "w": 12, "x": 0, "y": 0}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "targets": [{"expr": "sdwanlite_backend_healthy", "refId": "A"}]}, {"type": "timeseries", "title": "Active connections per backend", "gridPos": {"h": 7, "w": 12, "x": 12, "y": 0}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "targets": [{"expr": "sdwanlite_backend_conns{kind=\"active\"}", "refId": "A"}]}, {"type": "timeseries", "title": "Bytes rx/tx per backend", "gridPos": {"h": 7, "w": 12, "x": 0, "y": 7}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "targets": [{"expr": "sdwanlite_backend_bytes", "refId": "A"}]}, {"type": "timeseries", "title": "Pool rejected connections", "gridPos": {"h": 7, "w": 12, "x": 12, "y": 7}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "targets": [{"expr": "sdwanlite_pool_rejected", "refId": "A"}]}, {"type": "timeseries", "title": "BGP RIB routes", "gridPos": {"h": 7, "w": 12, "x": 0, "y": 14}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "targets": [{"expr": "sdwanlite_bgp_rib_routes", "refId": "A"}]}, {"type": "timeseries", "title": "BGP established sessions", "gridPos": {"h": 7, "w": 12, "x": 12, "y": 14}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "targets": [{"expr": "sdwanlite_bgp_sessions_established", "refId": "A"}]}, {"type": "timeseries", "title": "Uptime", "gridPos": {"h": 7, "w": 12, "x": 0, "y": 21}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "targets": [{"expr": "sdwanlite_uptime_seconds", "refId": "A"}]}]}, "overwrite": true}
+{
+  "dashboard": {
+    "title": "SDWANLite",
+    "uid": "sdwanlite",
+    "schemaVersion": 39,
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "type": "timeseries",
+        "title": "Backend health",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_backend_healthy",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Active connections per backend",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_backend_conns{kind=\"active\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Bytes rx/tx per backend",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 7
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_backend_bytes",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Pool rejected connections",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 12,
+          "y": 7
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_pool_rejected",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "BGP RIB routes",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 14
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_bgp_rib_routes",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "BGP established sessions",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 12,
+          "y": 14
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_bgp_sessions_established",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Uptime",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 21
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_uptime_seconds",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Latency p50/p95 (us)",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 28
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "\u00b5s"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_backend_latency_us{quantile=\"p50\"}",
+            "refId": "A"
+          },
+          {
+            "expr": "sdwanlite_backend_latency_us{quantile=\"p95\"}",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Traffic rx/tx rate",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 12,
+          "y": 28
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "rate(sdwanlite_backend_bytes{dir=\"rx\"}[5m])",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(sdwanlite_backend_bytes{dir=\"tx\"}[5m])",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Errors: rejected conns + down backends",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 0,
+          "y": 35
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "rate(sdwanlite_pool_rejected[5m])",
+            "refId": "A"
+          },
+          {
+            "expr": "count(sdwanlite_backend_healthy == 0)",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Saturation: active/max conns",
+        "gridPos": {
+          "h": 7,
+          "w": 12,
+          "x": 12,
+          "y": 35
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit"
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "sdwanlite_pool_active_conns / (sdwanlite_pool_max_conns > 0)",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -961,6 +961,12 @@ async fn api_metrics(
     out.push_str("# TYPE sdwanlite_backend_healthy gauge\n");
     out.push_str("# HELP sdwanlite_backend_conns Connection counters per backend.\n");
     out.push_str("# TYPE sdwanlite_backend_conns counter\n");
+    out.push_str("# HELP sdwanlite_backend_latency_us Backend connect latency percentiles in microseconds.\n");
+    out.push_str("# TYPE sdwanlite_backend_latency_us gauge\n");
+    out.push_str("# HELP sdwanlite_pool_active_conns Active connections at pool level.\n");
+    out.push_str("# TYPE sdwanlite_pool_active_conns gauge\n");
+    out.push_str("# HELP sdwanlite_pool_max_conns Pool connection limit (0 = unlimited).\n");
+    out.push_str("# TYPE sdwanlite_pool_max_conns gauge\n");
 
     for pool in &state.tcp_pools {
         for b in pool.backends().await {
@@ -993,11 +999,34 @@ async fn api_metrics(
                 b.addr,
                 b.tx_bytes()
             ));
+            let (p50, p95) = b.latency_percentiles_us();
+            if let Some(v) = p50 {
+                out.push_str(&format!(
+                    "sdwanlite_backend_latency_us{{pool=\"tcp:{}\",backend=\"{}\",quantile=\"p50\"}} {}\n",
+                    pool.name, b.addr, v
+                ));
+            }
+            if let Some(v) = p95 {
+                out.push_str(&format!(
+                    "sdwanlite_backend_latency_us{{pool=\"tcp:{}\",backend=\"{}\",quantile=\"p95\"}} {}\n",
+                    pool.name, b.addr, v
+                ));
+            }
         }
         out.push_str(&format!(
             "sdwanlite_pool_rejected{{pool=\"tcp:{}\"}} {}\n",
             pool.name,
             pool.rejected_conns()
+        ));
+        out.push_str(&format!(
+            "sdwanlite_pool_active_conns{{pool=\"tcp:{}\"}} {}\n",
+            pool.name,
+            pool.active_conns()
+        ));
+        out.push_str(&format!(
+            "sdwanlite_pool_max_conns{{pool=\"tcp:{}\"}} {}\n",
+            pool.name,
+            pool.max_conns()
         ));
     }
     for pool in &state.http_pools {

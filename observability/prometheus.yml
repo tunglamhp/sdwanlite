@@ -4,4 +4,4 @@ global:
 scrape_configs:
   - job_name: sdwanlite
     static_configs:
-      - targets: ['sdwanlite:8080']
+      - targets: ['sdwanlite:18080']
