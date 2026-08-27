@@ -424,6 +424,7 @@ fn app() -> Element {
                         ("firewall", "🛡", "Firewall"),
                         ("alerts", "🔔", "Alerts"),
                         ("qos", "📊", "QoS"),
+                        ("tls", "🔐", "TLS/ACME"),
                     ] {
                         button {
                             key: "{id}",
@@ -465,7 +466,9 @@ fn app() -> Element {
                         "bgp" => "BGP",
                         "lb" => "Load Balancers",
                         "policy" => "Path Policy",
+                        "tls" => "TLS / ACME",
                         "actions" => "Quick Actions",
+                        "alerts" => "Alerts & Events",
                         _ => "Dashboard Overview",
                     }} }
                     button { class: "hamburger", onclick: move |_| sidebar_open.toggle(), "☰" }
@@ -480,6 +483,7 @@ fn app() -> Element {
                 "firewall" => rsx! { FirewallView {} },
                 "alerts" => rsx! { AlertsView {} },
                 "qos" => rsx! { QosView {} },
+                "tls" => rsx! { TlsView {} },
                     "policy" => rsx! { PolicyView {} },
                     _ => rsx! { Overview { status } },
                 }}
@@ -788,6 +792,7 @@ fn BgpView(
     rib_hist: Signal<Vec<usize>>,
 ) -> Element {
     let points = rib_points(&*rib_hist.read());
+    let mut rib_filter = use_signal(String::new);
 
     rsx! {
         div { class: "grid2",
@@ -833,6 +838,12 @@ fn BgpView(
                 div { style: "color:var(--muted);font-size:10px;letter-spacing:1px;margin-top:4px",
                     "RIB HISTORY (LIVE)"
                 }
+                input {
+                    style: "width:100%;margin:10px 0 8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text)",
+                    value: "{rib_filter}",
+                    placeholder: "filter prefix…",
+                    oninput: move |e| rib_filter.set(e.value()),
+                }
                 table { style: "margin-top:10px",
                     thead { tr { th { "Prefix" } th { "Neighbor" } th { "AS-path" } th { "Best" } } }
                     tbody {
@@ -840,8 +851,14 @@ fn BgpView(
                             Ok(r) if r.routes.is_empty() => rsx! {
                                 tr { td { colspan: "4", style: "color:var(--muted)", "empty" } }
                             },
-                            Ok(r) => rsx! {
-                                {r.routes.iter().map(|rt| rsx! {
+                            Ok(r) => {
+                                let q = rib_filter.read().to_lowercase();
+                                let rows: Vec<&RibRoute> = r.routes
+                                    .iter()
+                                    .filter(|rt| q.is_empty() || rt.prefix.to_lowercase().contains(&q))
+                                    .collect();
+                                rsx! {
+                                {rows.iter().map(|rt| rsx! {
                                     tr { key: "{rt.prefix}-{rt.neighbor}",
                                         td { class: "mono", "{rt.prefix}" }
                                         td { "{rt.neighbor}" }
@@ -849,6 +866,7 @@ fn BgpView(
                                         td { {if rt.best { rsx! { span { class: "pill ok", "best" } }} else { rsx! {} }} }
                                     }
                                 })}
+                                }
                             },
                             Err(e) => rsx! { tr { td { colspan: "4", style: "color:var(--red)", "{e}" } } },
                         }}
@@ -1580,6 +1598,55 @@ struct AlertEventView {
     message: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TlsStatus {
+    #[serde(default)]
+    cert_file: String,
+    #[serde(default)]
+    key_file: String,
+    cert: Option<CertInfo>,
+    #[serde(default)]
+    acme: AcmeView,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct CertInfo {
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    issuer: String,
+    #[serde(default)]
+    not_before: i64,
+    #[serde(default)]
+    not_after: i64,
+    #[serde(default)]
+    days_left: i64,
+    #[serde(default)]
+    sans: Vec<String>,
+    #[serde(default)]
+    parse_error: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct AcmeView {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    directory_url: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    domains: Vec<String>,
+    #[serde(default)]
+    http01_port: u16,
+    #[serde(default)]
+    renew_days: u32,
+    #[serde(default)]
+    dns01: bool,
+    #[serde(default)]
+    cloudflare_token_set: bool,
+}
+
 fn chrono_fmt(ts: u64) -> String {
     let d = ts / 86400; let r = ts % 86400;
     format!("day+{d} {:02}:{:02}:{:02} UTC", r / 3600, (r % 3600) / 60, r % 60)
@@ -1587,13 +1654,35 @@ fn chrono_fmt(ts: u64) -> String {
 
 #[component]
 fn AlertsView() -> Element {
-    let data = use_resource(|| async {
-        let rsp = gloo_net::http::Request::get("/api/alerts").send().await.map_err(|e| e.to_string())?;
-        rsp.json::<AlertsData>().await.map_err(|e| e.to_string())
+    // live poll every 3s; only re-render when the event set actually changed
+    let mut data: Signal<Result<AlertsData, String>> =
+        use_signal(|| Err("loading…".into()));
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                let r = gloo_net::http::Request::get("/api/alerts").send().await;
+                match r {
+                    Ok(rsp) => match rsp.json::<AlertsData>().await {
+                        Ok(d) => {
+                            let prev = data.peek().as_ref().ok().map(|p| {
+                                (p.count, p.events.first().map(|e| e.timestamp))
+                            });
+                            let cur = (d.count, d.events.first().map(|e| e.timestamp));
+                            if prev != Some(cur) {
+                                data.set(Ok(d));
+                            }
+                        }
+                        Err(e) => data.set(Err(e.to_string())),
+                    },
+                    Err(e) => data.set(Err(e.to_string())),
+                }
+                gloo_timers::future::TimeoutFuture::new(3000).await;
+            }
+        });
     });
     let body = match data.read().as_ref() {
-        Some(Ok(d)) if d.events.is_empty() => "<div style='color:var(--muted);font-size:13px'>No events yet.</div>".into(),
-        Some(Ok(d)) => {
+        Ok(d) if d.events.is_empty() => "<div style='color:var(--muted);font-size:13px'>No events yet.</div>".into(),
+        Ok(d) => {
             let mut rows = String::new();
             for e in d.events.iter().rev().take(50) {
                 let (cls, pl) = match e.severity.as_str() {
@@ -1606,10 +1695,119 @@ fn AlertsView() -> Element {
             }
             format!("<div>{}</div>", rows)
         }
-        Some(Err(e)) => format!("<div style='color:var(--red)'>Error: {e}</div>"),
-        None => "<div style='color:var(--muted)'>loading…</div>".into(),
+        Err(e) => format!("<div style='color:var(--red)'>Error: {e}</div>"),
     };
     rsx! { div { class: "card", h3 { "Event Log" } div { dangerous_inner_html: "{body}" } } }
+}
+
+#[component]
+fn TlsView() -> Element {
+    let mut tick = use_signal(|| 0u32);
+    let mut busy = use_signal(|| false);
+    let mut action_msg = use_signal(|| Option::<String>::None);
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(5000).await;
+                tick.with_mut(|t| *t = t.wrapping_add(1));
+            }
+        });
+    });
+    let data = use_resource(move || async move {
+        let _t = tick.read();
+        let rsp = gloo_net::http::Request::get("/api/tls/status").send().await.map_err(|e| e.to_string())?;
+        rsp.json::<TlsStatus>().await.map_err(|e| e.to_string())
+    });
+
+    let reload = move |mut tick: Signal<u32>, mut busy: Signal<bool>, mut msg: Signal<Option<String>>| {
+        spawn(async move {
+            busy.set(true);
+            msg.set(None);
+            let r = gloo_net::http::Request::post("/api/tls/reload").send().await;
+            msg.set(match r {
+                Ok(rsp) if rsp.ok() => Some(format!("TLS reloaded: {}", rsp.text().await.unwrap_or_default())),
+                Ok(rsp) => Some(format!("TLS reload HTTP {}", rsp.status())),
+                Err(e) => Some(format!("TLS reload failed: {e}")),
+            });
+            busy.set(false);
+            tick.with_mut(|t| *t = t.wrapping_add(1));
+        });
+    };
+    let issue = move |mut tick: Signal<u32>, mut busy: Signal<bool>, mut msg: Signal<Option<String>>| {
+        spawn(async move {
+            busy.set(true);
+            msg.set(None);
+            let r = gloo_net::http::Request::post("/api/acme/issue").send().await;
+            msg.set(match r {
+                Ok(rsp) => Some(format!("ACME issue: {}", rsp.text().await.unwrap_or_default())),
+                Err(e) => Some(format!("ACME issue failed: {e}")),
+            });
+            busy.set(false);
+            tick.with_mut(|t| *t = t.wrapping_add(1));
+        });
+    };
+
+    let (cert_block, acme_block) = match data.read().as_ref() {
+        Some(Ok(st)) => {
+            let cert = match &st.cert {
+                None => rsx! { div { style: "color:var(--muted)", "no certificate at {st.cert_file}" } },
+                Some(c) if !c.parse_error.is_empty() => rsx! {
+                    div { style: "color:var(--red)", "parse error: {c.parse_error}" }
+                },
+                Some(c) => {
+                    let expiry_pill = if c.days_left > 30 {
+                        rsx! { span { class: "pill ok", "{c.days_left} days" } }
+                    } else if c.days_left >= 7 {
+                        rsx! { span { class: "pill warn", "{c.days_left} days" } }
+                    } else {
+                        rsx! { span { class: "pill bad", "{c.days_left} days" } }
+                    };
+                    let sans = c.sans.join(", ");
+                    rsx! {
+                        div { class: "kv-row", span { class: "k", "file" } span { class: "mono", "{st.cert_file}" } }
+                        div { class: "kv-row", span { class: "k", "subject" } span { "{c.subject}" } }
+                        div { class: "kv-row", span { class: "k", "issuer" } span { "{c.issuer}" } }
+                        div { class: "kv-row", span { class: "k", "expires" } span { "{chrono_fmt(c.not_after.max(0) as u64)}" } }
+                        div { class: "kv-row", span { class: "k", "valid" } {expiry_pill} }
+                        div { class: "kv-row", span { class: "k", "SANs" } span { class: "mono", "{sans}" } }
+                    }
+                }
+            };
+            let a = &st.acme;
+            let acme_domains = a.domains.join(", ");
+            let acme = rsx! {
+                div { class: "kv-row", span { class: "k", "enabled" } {pill(a.enabled, "on", "off")} }
+                div { class: "kv-row", span { class: "k", "directory" } span { class: "mono", "{a.directory_url}" } }
+                div { class: "kv-row", span { class: "k", "email" } span { "{a.email}" } }
+                div { class: "kv-row", span { class: "k", "domains" } span { class: "mono", "{acme_domains}" } }
+                div { class: "kv-row", span { class: "k", "http-01 port" } span { "{a.http01_port}" } }
+                div { class: "kv-row", span { class: "k", "renew threshold" } span { "{a.renew_days} days" } }
+                div { class: "kv-row", span { class: "k", "dns-01" } {pill(a.dns01, "on", "off")} }
+                div { class: "kv-row", span { class: "k", "cloudflare token" } {pill(a.cloudflare_token_set, "set", "not set")} }
+                div { class: "actions-bar", style: "margin-top:14px",
+                    button { class: "act-btn", disabled: busy(), onclick: move |_| reload(tick, busy, action_msg), "Reload TLS" }
+                    button { class: "act-btn", disabled: busy() || !a.enabled, onclick: move |_| issue(tick, busy, action_msg), "Issue ACME certificate" }
+                }
+                {action_msg().map(|m| rsx! { div { style: "color:var(--muted);font-size:12px;margin-top:8px", "{m}" } })}
+            };
+            (cert, acme)
+        }
+        Some(Err(e)) => (
+            rsx! { div { style: "color:var(--red)", "Error: {e}" } },
+            rsx! {},
+        ),
+        None => (
+            rsx! { div { style: "color:var(--muted)", "loading…" } },
+            rsx! {},
+        ),
+    };
+
+    rsx! {
+        div { class: "grid2",
+            div { class: "card", h3 { "Certificate" } {cert_block} }
+            div { class: "card", h3 { "ACME (Let's Encrypt)" } {acme_block} }
+        }
+    }
 }
 
 #[component]
