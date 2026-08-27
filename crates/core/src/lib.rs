@@ -57,12 +57,16 @@ pub struct Acme {
     pub enabled: bool,
     #[serde(default = "default_acme_directory")]
     pub directory_url: String,
+    #[serde(default)]
     pub email: String,
     /// DNS names to include in the certificate.
+    #[serde(default)]
     pub domains: Vec<String>,
     #[serde(default = "default_http01_port")]
     pub http01_port: u16,
+    #[serde(default)]
     pub cert_file: String,
+    #[serde(default)]
     pub key_file: String,
     /// Renew when less than this many days remain (default 30).
     #[serde(default = "default_renew_days")]

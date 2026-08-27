@@ -23,6 +23,7 @@ futures-util = "0.3"
 sdwanlite-mesh = { path = "../mesh" }
 sdwanlite-bgp = { path = "../bgp" }
 sdwanlite-acme = { path = "../acme" }
+x509-parser = "0.16"
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }

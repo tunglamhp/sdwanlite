@@ -155,6 +155,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/events", get(api_events))
         .route("/api/reload", post(api_reload))
         .route("/api/tls/reload", post(api_tls_reload))
+        .route("/api/tls/status", get(api_tls_status))
+        .route("/api/acme/issue", post(api_acme_issue))
         .route("/api/alerts", get(api_alerts))
         .route(
             "/api/firewall",
@@ -1146,6 +1148,108 @@ async fn api_tls_reload(
         }
     }
     axum::Json(serde_json::json!({ "ok": true, "results": results }))
+}
+
+/// Certificate + ACME status for the TLS management view.
+/// Never returns the Cloudflare token value — only whether it is set.
+async fn api_tls_status(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let acme = &state.config.acme;
+    let cert_path = std::path::Path::new(&acme.cert_file);
+    let cert = if cert_path.exists() {
+        match std::fs::read(cert_path) {
+            Ok(data) => x509_parser::prelude::parse_x509_pem(&data)
+                .ok()
+                .and_then(|(_, pem)| {
+                    use x509_parser::prelude::FromDer as _;
+                    let (_, c) =
+                        x509_parser::prelude::X509Certificate::from_der(&pem.contents).ok()?;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let not_before: i64 = c.validity().not_before.timestamp();
+                    let not_after: i64 = c.validity().not_after.timestamp();
+                    let sans = c
+                        .subject_alternative_name()
+                        .ok()
+                        .flatten()
+                        .map(|san| {
+                            san.value
+                                .general_names
+                                .iter()
+                                .filter_map(|g| match g {
+                                    x509_parser::extensions::GeneralName::DNSName(n) => {
+                                        Some(n.to_string())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default();
+                    Some(serde_json::json!({
+                        "subject": c.subject().to_string(),
+                        "issuer": c.issuer().to_string(),
+                        "not_before": not_before,
+                        "not_after": not_after,
+                        "days_left": (not_after - now).div_euclid(86400).max(0),
+                        "sans": sans,
+                    }))
+                })
+                .unwrap_or_else(
+                    || serde_json::json!({ "parse_error": "not a valid PEM certificate" }),
+                ),
+            Err(e) => serde_json::json!({ "read_error": e.to_string() }),
+        }
+    } else {
+        serde_json::Value::Null
+    };
+    axum::Json(serde_json::json!({
+        "cert_file": acme.cert_file,
+        "key_file": acme.key_file,
+        "cert": cert,
+        "acme": {
+            "enabled": acme.enabled,
+            "directory_url": acme.directory_url,
+            "email": acme.email,
+            "domains": acme.domains,
+            "http01_port": acme.http01_port,
+            "renew_days": acme.renew_days,
+            "dns01": acme.dns01,
+            "cloudflare_token_set": acme.cloudflare_api_token.is_some(),
+        },
+    }))
+}
+
+/// Kick off an ACME issue in the background; the certificate is written to
+/// the configured cert_file on success (then call /api/tls/reload to pick
+/// it up in the HTTP pools).
+async fn api_acme_issue(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
+    if !authorized(&state, &headers) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    let cfg = state.config.acme.clone();
+    if !cfg.enabled {
+        return axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "acme is disabled in sdwanlite.toml (acme.enabled = false)"
+        }));
+    }
+    tokio::spawn(async move {
+        match sdwanlite_acme::renew::issue_now(&cfg).await {
+            Ok(()) => tracing::info!("acme: certificate issued and written"),
+            Err(e) => tracing::error!("acme: issue failed: {e}"),
+        }
+    });
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "started": true,
+        "note": "issue started in background; run TLS reload after it completes"
+    }))
 }
 
 /// Server-Sent Events stream of the status payload (replaces dashboard polling).
