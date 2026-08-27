@@ -59,11 +59,14 @@ pub struct DeviceRecord {
     pub site_id: SiteId,
     /// Hostname reported at registration.
     pub hostname: String,
+    /// Current lifecycle state.
+    pub state: DeviceState,
     /// Current config (latest committed version).
     pub current: DeviceConfig,
     /// Broadcast channel for server-pushed config deltas.
     pub tx: broadcast::Sender<DeviceConfig>,
 }
+
 
 impl DeviceStore {
     /// Construct an empty store wrapped in an `Arc` ready to share across handlers.
@@ -236,15 +239,20 @@ async fn register(
         path_labels: Vec::new(),
         version: req.version,
     };
+
     let (tx, _rx) = broadcast::channel::<DeviceConfig>(64);
+
     s.store
         .insert(DeviceRecord {
             org_id: req.org_id,
             site_id: req.site_id,
             hostname: req.hostname,
+            state: sdwan_core::DeviceState::Connected,
             current: cfg.clone(),
             tx,
         })
+
+
         .await?;
 
     let resp = RegisterResponse {

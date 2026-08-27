@@ -26,14 +26,13 @@
 //! as argv (see AGENTS.md). Examples and doc-comments use RFC 5737 documentation
 //! addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`) only — no real IPs.
 //!
-//! ## flexiWAN coverage in this crate
-//!
 //! - §1 Management Core → [`DeviceConfig::org_id`] / [`DeviceConfig::site_id`] (multi-tenant)
+//! - §1 Management Core → [`DeviceState`] device lifecycle
 //! - §2 Device Config → [`DeviceConfig`] + version
 //! - §10 Path Labels → [`PathLabel`]
 //! - §11 Path Selection → [`TunnelConfig::WireGuard::path_label`] (declarative link)
 //! - §9 Link Monitors → [`HealthCheckConfig`]
-//!
+
 //! Other flexiWAN groups (routing, NAT, QoS, HA, AI, dashboards, NB API) are
 //! implemented in P1–P3 (see `docs/ARCHITECTURE-P0.md`).
 
@@ -139,6 +138,28 @@ branded_uuid! {
     /// no interface ID field (matches `api-spec.yaml`).
     InterfaceId
 }
+
+/// Device lifecycle state (flexiWAN §1 — Management Core).
+///
+/// Transitions:
+/// * `provisioned` → `connected` on successful register/heartbeat
+/// * `connected` → `degraded` on repeated telemetry/missed heartbeats
+/// * `degraded` → `disconnected` on extended loss
+/// * `disconnected` → `connected` on recovery
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceState {
+    /// Registered but no active control-plane session yet.
+    Provisioned,
+    /// Active control-plane session with healthy telemetry.
+    Connected,
+    /// Registered, but telemetry/heartbeats are degraded.
+    Degraded,
+    /// No active control-plane session.
+    Disconnected,
+}
+
 
 /// Monotonic per-device configuration version.
 ///
@@ -267,18 +288,18 @@ pub enum PathLabelKind {
 /// Top-level tenant (flexiWAN §1 — Management Core).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Org {
-    /// Org identity (UUIDv4, branded [`OrgId`]).
+    /// Tenant identity (branded [`OrgId`]).
     pub id: OrgId,
-    /// Human-readable display name (unique within the controller).
+    /// Org display name.
     pub name: String,
-    /// Unix epoch seconds the org was created.
+    /// Unix epoch seconds.
     pub created_at: u64,
 }
 
 /// Site within an org (flexiWAN §1 — Org/Site/Device hierarchy).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Site {
-    /// Site identity (UUIDv4, branded [`SiteId`]).
+    /// Site identity (branded [`SiteId`]).
     pub id: SiteId,
     /// Owning org (branded [`OrgId`]).
     pub org_id: OrgId,
@@ -301,7 +322,10 @@ pub struct Device {
     pub hostname: String,
     /// Unix epoch seconds the device was last seen by the controller.
     pub last_seen: u64,
+    /// Current lifecycle state.
+    pub state: DeviceState,
 }
+
 
 /// RBAC role (flexiWAN §1 — Securing accounts).
 ///

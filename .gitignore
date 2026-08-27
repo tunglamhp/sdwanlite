@@ -6,3 +6,5 @@ demo_root.html
 web-dist/
 path-policy.json
 pool-overrides.json
+# Local Pi runtime state
+.atl/
