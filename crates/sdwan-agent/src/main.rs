@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use sdwan_agent::{
-    controller_router, Agent, AgentConfig, AgentError, DeviceStore, Result as AgentResult,
+    controller_router, Agent, AgentConfig,  DeviceStore, Result as AgentResult,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -187,7 +187,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let site_id = args.site_id.unwrap_or_else(Uuid::new_v4);
     let hostname = args
         .hostname
-        .unwrap_or_else(|| gethostname().unwrap_or_else(|_| "sdwan-agent".into()));
+        .unwrap_or_else(gethostname);
 
     let controller_url = args.controller_url.clone();
     let cfg = AgentConfig::new(
@@ -274,29 +274,11 @@ fn is_loopback(a: SocketAddr) -> bool {
     }
 }
 
-fn gethostname() -> std::io::Result<String> {
-    // Hostname lookup via `hostname`/etc — kept minimal, no shell-out.
-    #[cfg(unix)]
-    {
-        let mut buf = [0u8; 256];
-        let rc = unsafe { libc_gethostname(buf.as_mut_ptr() as *mut _, buf.len()) };
-        if rc == 0 {
-            let pos = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
-        }
-    }
-    Err(std::io::Error::other("hostname unavailable"))
+/// Best-effort hostname lookup. Prefers `HOSTNAME` (Linux) / `COMPUTERNAME`
+/// (Windows) env vars; falls back to the crate name. Never fails the agent
+/// startup over a missing hostname.
+fn gethostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "sdwan-agent".into())
 }
-
-#[cfg(unix)]
-extern "C" {
-    fn gethostname(name: *mut std::ffi::c_char, len: size_t) -> i32;
-}
-#[cfg(unix)]
-unsafe fn libc_gethostname(p: *mut std::ffi::c_char, l: usize) -> i32 {
-    gethostname(p, l)
-}
-
-// Silence unused warnings for the handle shim.
-#[allow(dead_code)]
-fn _suppress(_: AgentError) {}
