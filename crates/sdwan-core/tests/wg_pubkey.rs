@@ -53,22 +53,15 @@ fn rejects_non_base64_charset() {
 
 #[test]
 fn rejects_decoded_length_mismatch() {
-    // base64 of "ABCDEFGHIJ" -> 10 bytes when decoded -> not 32
-    // Pad to 44 chars using a base64-shaped string that decodes short.
-    // We construct "QUFB" repeated and pad to decode to fewer than 32 bytes.
-    let short_payload = b"hello"; // 5 bytes -> base64 "aGVsbG8=" length 8
-    // Force 44 chars by padding with valid base64 chars.
-    let s = "aGVsbG8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 44 chars
-    // This decodes to 5 + (44-8) bytes depending on padding alignment.
-    // Just check we get a decode-length OR decode error.
-    let err = validate_public_key(s).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            ValidationError::PublicKeyDecodedLength { .. } | ValidationError::PublicKeyDecode(_)
-        ),
-        "unexpected error: {err:?}"
-    );
+    // 44 chars (length-valid, charset-valid) but decodes to 33 bytes, not 32.
+    // 33 zero bytes → base64 "A" * 44, exactly 44 chars, no padding.
+    let s = "A".repeat(44);
+    match validate_public_key(&s).unwrap_err() {
+        ValidationError::PublicKeyDecodedLength { len } => {
+            assert_eq!(len, 33);
+        }
+        e => panic!("expected decoded-length error, got {e:?}"),
+    }
 }
 
 #[test]
