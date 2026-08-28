@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS devices (
     org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     site_id     TEXT NOT NULL REFERENCES sites(id)    ON DELETE RESTRICT,
     hostname    TEXT NOT NULL,
+    state       TEXT    NOT NULL,
     last_seen   INTEGER NOT NULL,
     UNIQUE(org_id, hostname)
 );
