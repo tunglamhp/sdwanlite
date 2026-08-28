@@ -13,7 +13,7 @@
 
 use axum::Router;
 use sdwan_agent::{controller_router, Agent, AgentConfig, DeviceStore};
-use sdwan_core::{ConfigVersion, DeviceConfig, DeviceId, OrgId, SiteId, ValidatedConfig};
+use sdwan_core::{ConfigVersion, DeviceId, OrgId, SiteId, ValidatedConfig};
 use std::sync::Arc;
 use uuid::Uuid;
 
