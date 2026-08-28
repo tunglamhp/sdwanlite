@@ -18,12 +18,13 @@
 pub mod agent;
 pub mod controller;
 pub mod error;
+pub mod store;
 pub mod telemetry;
 
 pub use agent::{Agent, AgentConfig, ApplyOutcome, ApplyState, VerifyFn};
 pub use controller::{
-    router as controller_router, ApplyRequest, ApplyResponse, DeviceRecord, DeviceStore,
-    RegisterRequest, RegisterResponse,
+    router as controller_router, ApplyRequest, ApplyResponse, RegisterRequest, RegisterResponse,
 };
 pub use error::{AgentError, Result};
+pub use store::{DeviceRecord, DeviceStore};
 pub use telemetry::{empty_frame, HealthFlag, LinkSample, TelemetryFrame};

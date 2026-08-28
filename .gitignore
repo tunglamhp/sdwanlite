@@ -8,3 +8,19 @@ path-policy.json
 pool-overrides.json
 # Local Pi runtime state
 .atl/
+# Build outputs
+dist/
+
+# Test/coverage
+coverage/
+
+# Logs
+*.log
+*.out
+agent_test.out
+cargo_test.out
+pocock_*.txt
+stderr.txt
+
+# Agent/runtime artifacts
+.atl/

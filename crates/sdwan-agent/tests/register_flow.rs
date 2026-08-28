@@ -106,7 +106,7 @@ async fn register_rejects_invalid_token() {
 async fn register_rejects_missing_token() {
     let store = DeviceStore::new();
     let app = router(store);
-    let body = serde_json::json!({});
+    let _body = serde_json::json!({});
     let valid_body = serde_json::json!({
         "device_id": Uuid::new_v4(),
         "org_id": Uuid::new_v4(),

@@ -26,6 +26,7 @@ struct Args {
     site_id: Option<Uuid>,
     hostname: Option<String>,
     bind: Option<SocketAddr>,
+    store_path: Option<std::path::PathBuf>,
     enable_live_actions: bool,
 }
 
@@ -48,6 +49,7 @@ fn parse_args() -> Result<Args> {
         site_id: None,
         hostname: None,
         bind: None,
+        store_path: None,
         enable_live_actions: false,
     };
 
@@ -233,7 +235,10 @@ async fn run_controller(args: Args) -> Result<()> {
             "refusing to bind {bind} without --enable-live-actions (AGENTS.md: loopback default)"
         );
     }
-    let store = DeviceStore::new();
+    let store = match args.store_path {
+        Some(p) => DeviceStore::sqlite(p).context("open sqlite store")?,
+        None => DeviceStore::new(),
+    };
     let app = controller_router(store, Arc::from(token.as_str()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "sdwan-agent controller listening");
