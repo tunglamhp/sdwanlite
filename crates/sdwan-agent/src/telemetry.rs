@@ -105,5 +105,4 @@ mod tests {
         let back: TelemetryFrame = serde_json::from_str(&j).unwrap();
         assert_eq!(back, f);
     }
-
 }

@@ -3,7 +3,7 @@
 use sdwan_core::{
     ConfigVersion, DeviceConfig, DeviceId, FirewallAction, FirewallPolicy, FirewallRule,
     HealthCheckConfig, Interface, OrgId, PathLabel, PathLabelKind, ProbeType, QosClass, QosPolicy,
-    Route, SiteId, TunnelConfig, WireGuardTunnel, ValidationError,
+    Route, SiteId, TunnelConfig, ValidationError, WireGuardTunnel,
 };
 use uuid::Uuid;
 
@@ -65,7 +65,9 @@ fn validate_accepts_well_formed_config() {
             mtu: 0,
             path_label: None,
         }],
-        tunnels: vec![sample_tunnel("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")],
+        tunnels: vec![sample_tunnel(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )],
         routes: vec![Route {
             destination: "0.0.0.0/0".into(),
             next_hop: "203.0.113.1".into(),
@@ -77,7 +79,8 @@ fn validate_accepts_well_formed_config() {
         version: ConfigVersion::new(1),
     };
     // Path label referenced by the tunnel must exist in path_labels.
-    c.path_labels.push(sample_path_label(&c.tunnels[0].path_label()));
+    c.path_labels
+        .push(sample_path_label(&c.tunnels[0].path_label()));
     c.validate().expect("valid config should pass");
 }
 
@@ -126,14 +129,17 @@ fn validate_rejects_empty_interface_name() {
             mtu: 0,
             path_label: None,
         }],
-        tunnels: vec![sample_tunnel("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")],
+        tunnels: vec![sample_tunnel(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )],
         routes: vec![],
         firewall: FirewallPolicy::default(),
         qos: QosPolicy::default(),
         path_labels: vec![sample_path_label("MPLS-Primary")],
         version: ConfigVersion::new(1),
     };
-    c.path_labels.push(sample_path_label(&c.tunnels[0].path_label()));
+    c.path_labels
+        .push(sample_path_label(&c.tunnels[0].path_label()));
     assert!(matches!(
         c.validate().unwrap_err(),
         ValidationError::Interface { .. }

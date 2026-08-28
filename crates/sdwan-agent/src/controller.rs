@@ -37,7 +37,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use sdwan_core::{ConfigVersion, DeviceConfig, DeviceId, OrgId, SiteId};
+use sdwan_core::{ConfigVersion, DeviceConfig, DeviceId, DeviceState, OrgId, SiteId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,7 +66,6 @@ pub struct DeviceRecord {
     /// Broadcast channel for server-pushed config deltas.
     pub tx: broadcast::Sender<DeviceConfig>,
 }
-
 
 impl DeviceStore {
     /// Construct an empty store wrapped in an `Arc` ready to share across handlers.
@@ -97,11 +96,13 @@ impl DeviceStore {
     }
 
     /// Replace a device's current config (used by `/apply`).
-    pub async fn replace_config(&self, id: DeviceId, new_config: DeviceConfig) -> Result<DeviceRecord> {
+    pub async fn replace_config(
+        &self,
+        id: DeviceId,
+        new_config: DeviceConfig,
+    ) -> Result<DeviceRecord> {
         let mut g = self.inner.lock().await;
-        let rec = g
-            .get_mut(&id)
-            .ok_or(AgentError::NotFound)?;
+        let rec = g.get_mut(&id).ok_or(AgentError::NotFound)?;
         rec.current = new_config.clone();
         let _ = rec.tx.send(new_config.clone());
         Ok(rec.clone())
@@ -251,8 +252,6 @@ async fn register(
             current: cfg.clone(),
             tx,
         })
-
-
         .await?;
 
     let resp = RegisterResponse {

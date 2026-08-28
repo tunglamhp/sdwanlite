@@ -9,10 +9,8 @@
 //! Both modes bind loopback by default; non-loopback requires `--enable-live-actions`.
 
 use anyhow::{Context, Result};
+use sdwan_agent::{controller_router, Agent, AgentConfig, DeviceStore};
 use sdwan_core::{DeviceId, OrgId, SiteId};
-use sdwan_agent::{
-    controller_router, Agent, AgentConfig, DeviceStore,
-};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -186,9 +184,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let device_id = DeviceId::from_uuid(args.device_id.unwrap_or_else(Uuid::new_v4));
     let org_id = OrgId::from_uuid(args.org_id.unwrap_or_else(Uuid::new_v4));
     let site_id = SiteId::from_uuid(args.site_id.unwrap_or_else(Uuid::new_v4));
-    let hostname = args
-        .hostname
-        .unwrap_or_else(gethostname);
+    let hostname = args.hostname.unwrap_or_else(gethostname);
 
     let controller_url = args.controller_url.clone();
     let cfg = AgentConfig::new(

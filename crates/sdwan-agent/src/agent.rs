@@ -104,7 +104,9 @@ pub struct ApplyOutcome {
 /// Lifecycle state of the transactional apply (snapshot → apply → verify →
 /// commit / rollback). Mirrors `docs/ARCHITECTURE-P0.md`; dashboards and the
 /// controller poll it via [`Agent::apply_state`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplyState {
     /// No apply in flight; waiting for a config push or an explicit call.

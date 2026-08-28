@@ -48,6 +48,7 @@ fn device_roundtrip() {
         site_id: SiteId::new(),
         hostname: "edge-01.sdwanlite.example".into(),
         last_seen: 1_700_000_002,
+        state: sdwan_core::DeviceState::Connected,
     };
     let j = serde_json::to_string(&d).unwrap();
     let back: Device = serde_json::from_str(&j).unwrap();

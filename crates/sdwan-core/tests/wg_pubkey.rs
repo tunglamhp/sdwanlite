@@ -33,7 +33,10 @@ fn rejects_long_key() {
     let s = "A".repeat(64);
     assert!(matches!(
         validate_public_key(&s).unwrap_err(),
-        ValidationError::PublicKeyLength { actual: 64, expected: 44 }
+        ValidationError::PublicKeyLength {
+            actual: 64,
+            expected: 44
+        }
     ));
 }
 

@@ -2,8 +2,8 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use sdwan_core::{DeviceId, OrgId, SiteId};
 use sdwan_agent::{controller_router, DeviceStore, HealthFlag, LinkSample, TelemetryFrame};
+use sdwan_core::{DeviceId, OrgId, SiteId};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;

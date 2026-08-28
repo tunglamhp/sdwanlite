@@ -6,11 +6,10 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use sdwan_core::{ConfigVersion, DeviceId, OrgId, SiteId};
 use sdwan_agent::{
-    controller_router, ApplyRequest, ApplyResponse, DeviceStore, RegisterResponse,
-    TelemetryFrame,
+    controller_router, ApplyRequest, ApplyResponse, DeviceStore, RegisterResponse, TelemetryFrame,
 };
+use sdwan_core::{ConfigVersion, DeviceId, OrgId, SiteId};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -57,13 +56,23 @@ async fn healthz_and_metrics_unauthenticated() {
     let app = router(store);
     let r = app
         .clone()
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
 
     let r = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
@@ -156,9 +165,7 @@ async fn apply_rejects_org_mismatch() {
         path_labels: vec![],
         version: ConfigVersion::new(2),
     };
-    let req = ApplyRequest {
-        config: rogue_cfg,
-    };
+    let req = ApplyRequest { config: rogue_cfg };
     let r = app
         .oneshot(
             Request::builder()
@@ -194,9 +201,7 @@ async fn apply_rejects_stale_version() {
         path_labels: vec![],
         version: ConfigVersion::new(1),
     };
-    let req = ApplyRequest {
-        config: cfg,
-    };
+    let req = ApplyRequest { config: cfg };
     let r = app
         .oneshot(
             Request::builder()

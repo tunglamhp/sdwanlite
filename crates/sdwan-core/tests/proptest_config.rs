@@ -29,15 +29,13 @@ fn uuid_strategy() -> impl Strategy<Value = Uuid> {
 
 /// Non-empty lowercase identifier (interface names, hostnames, labels).
 fn name_strategy() -> impl Strategy<Value = String> {
-    prop::collection::vec(prop::char::range('a', 'z'), 1..=12)
-        .prop_map(|v| v.into_iter().collect())
+    prop::collection::vec(prop::char::range('a', 'z'), 1..=12).prop_map(|v| v.into_iter().collect())
 }
 
 /// Base64 of 32 random bytes — exactly the 44-char X25519 public-key shape.
 fn wg_key_strategy() -> impl Strategy<Value = String> {
-    prop::collection::vec(any::<u8>(), 32).prop_map(|b| {
-        base64::engine::general_purpose::STANDARD.encode(b)
-    })
+    prop::collection::vec(any::<u8>(), 32)
+        .prop_map(|b| base64::engine::general_purpose::STANDARD.encode(b))
 }
 
 /// Address vector; `valid` filters out unspecified addresses (`0.0.0.0`, `::`)
@@ -126,13 +124,13 @@ fn tunnel_strategy() -> impl Strategy<Value = TunnelConfig> {
 }
 
 fn route_strategy() -> impl Strategy<Value = Route> {
-    (name_strategy(), name_strategy(), any::<u32>()).prop_map(
-        |(destination, next_hop, metric)| Route {
+    (name_strategy(), name_strategy(), any::<u32>()).prop_map(|(destination, next_hop, metric)| {
+        Route {
             destination,
             next_hop,
             metric,
-        },
-    )
+        }
+    })
 }
 
 fn firewall_rule_strategy(valid: bool) -> impl Strategy<Value = FirewallRule> {
@@ -161,18 +159,18 @@ fn firewall_rule_strategy(valid: bool) -> impl Strategy<Value = FirewallRule> {
 }
 
 fn qos_class_strategy(valid: bool) -> impl Strategy<Value = QosClass> {
-    (name_strategy(), dscp_strategy(valid), any::<u64>()).prop_map(
-        |(name, dscp, bandwidth_bps)| QosClass {
+    (name_strategy(), dscp_strategy(valid), any::<u64>()).prop_map(|(name, dscp, bandwidth_bps)| {
+        QosClass {
             name,
             dscp,
             bandwidth_bps,
-        },
-    )
+        }
+    })
 }
 
 fn path_label_strategy() -> impl Strategy<Value = PathLabel> {
-    (uuid_strategy(), name_strategy(), 0..6u8, name_strategy()).prop_map(
-        |(id, name, kind, sla)| PathLabel {
+    (uuid_strategy(), name_strategy(), 0..6u8, name_strategy()).prop_map(|(id, name, kind, sla)| {
+        PathLabel {
             id,
             name,
             kind: match kind {
@@ -184,8 +182,8 @@ fn path_label_strategy() -> impl Strategy<Value = PathLabel> {
                 _ => PathLabelKind::Other,
             },
             sla,
-        },
-    )
+        }
+    })
 }
 
 /// Any `DeviceConfig` — deliberately unconstrained fields so roundtrip fuzzing

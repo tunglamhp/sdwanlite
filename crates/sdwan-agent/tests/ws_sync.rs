@@ -46,8 +46,8 @@ async fn ws_push_commits_config_end_to_end() {
     let site_id = SiteId::from_uuid(Uuid::new_v4());
 
     // Register through the real agent so controller store and agent agree on v1.
-    let cfg = AgentConfig::new(base, TOKEN, device_id, org_id, site_id, "edge-ws")
-        .expect("agent config");
+    let cfg =
+        AgentConfig::new(base, TOKEN, device_id, org_id, site_id, "edge-ws").expect("agent config");
     let agent = Arc::new(Agent::new(cfg).expect("agent init"));
     agent.register().await.expect("register");
     assert_eq!(agent.current().version, ConfigVersion::new(1));

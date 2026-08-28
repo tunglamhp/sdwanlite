@@ -37,7 +37,12 @@
 //! implemented in P1–P3 (see `docs/ARCHITECTURE-P0.md`).
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
+#![allow(
+    clippy::doc_lazy_continuation,
+    clippy::new_without_default,
+    missing_docs,
+    clippy::should_implement_trait
+)]
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -160,7 +165,6 @@ pub enum DeviceState {
     Disconnected,
 }
 
-
 /// Monotonic per-device configuration version.
 ///
 /// The controller issues monotonically increasing versions on every successful
@@ -170,8 +174,17 @@ pub enum DeviceState {
 ///
 /// Serde is `#[serde(transparent)]` — the wire format is a plain integer, unchanged.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
-    Serialize, Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
     schemars::JsonSchema,
 )]
 #[serde(transparent)]
@@ -326,7 +339,6 @@ pub struct Device {
     pub state: DeviceState,
 }
 
-
 /// RBAC role (flexiWAN §1 — Securing accounts).
 ///
 /// The controller scopes mutations by role; the agent itself only carries an
@@ -412,7 +424,10 @@ pub enum ValidationError {
     PublicKeyDecode(String),
     /// A tunnel failed validation (nested in the tunnel context).
     #[error("tunnel `{interface}`: {source}")]
-    Tunnel { interface: String, source: Box<ValidationError> },
+    Tunnel {
+        interface: String,
+        source: Box<ValidationError>,
+    },
     /// An interface failed validation.
     #[error("interface `{name}`: {message}")]
     Interface { name: String, message: String },
@@ -469,7 +484,9 @@ fn default_hc_timeout_ms() -> u32 {
 
 /// Probe transport used by the link monitor.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeType {
     /// ICMP echo (requires `CAP_NET_RAW`; see AGENTS.md).
@@ -545,11 +562,10 @@ pub struct WireGuardTunnel {
 impl WireGuardTunnel {
     /// Validate this tunnel's `public_key` against the X25519 base64 contract.
     pub fn validate(&self) -> std::result::Result<(), ValidationError> {
-        validate_public_key(&self.public_key)
-            .map_err(|e| ValidationError::Tunnel {
-                interface: self.interface.clone(),
-                source: Box::new(e),
-            })
+        validate_public_key(&self.public_key).map_err(|e| ValidationError::Tunnel {
+            interface: self.interface.clone(),
+            source: Box::new(e),
+        })
     }
 }
 

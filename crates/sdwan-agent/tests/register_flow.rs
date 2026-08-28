@@ -5,10 +5,10 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use sdwan_core::{ConfigVersion, DeviceId, OrgId, SiteId};
 use sdwan_agent::{
     controller_router, ApplyRequest, DeviceStore, RegisterRequest, RegisterResponse,
 };
+use sdwan_core::{ConfigVersion, DeviceId, OrgId, SiteId};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;

@@ -1,16 +1,19 @@
 //! Crate-wide error type. Keeps `anyhow` free for binary glue while library callers
 //! (controller tests, integration suites) get structured errors via `thiserror`.
 
-use sdwan_core::ConfigVersion;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use sdwan_core::ConfigVersion;
 use serde_json::json;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("config version mismatch: incoming={incoming} current={current}")]
-    ConfigVersion { incoming: ConfigVersion, current: ConfigVersion },
+    ConfigVersion {
+        incoming: ConfigVersion,
+        current: ConfigVersion,
+    },
 
     #[error("org mismatch: incoming={incoming} current={current}")]
     OrgMismatch { incoming: String, current: String },
