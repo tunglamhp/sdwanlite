@@ -1,9 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useSdwanStore } from "../store";
 import { formatUptime } from "../format";
 
 export default function Diagnostics() {
+  const loadTelemetry = useSdwanStore((state) => state.loadTelemetry);
   const telemetryByDeviceId = useSdwanStore((state) => state.telemetryByDeviceId);
+
+  useEffect(() => {
+    loadTelemetry().catch(() => undefined);
+  }, [loadTelemetry]);
+
   const frames = useMemo(() => Object.values(telemetryByDeviceId), [telemetryByDeviceId]);
 
   return (
@@ -27,7 +33,22 @@ export default function Diagnostics() {
                 <td>{frame.device_id}</td>
                 <td>{formatUptime(frame.uptime_secs)}</td>
                 <td>{frame.links.length}</td>
-                <td>{frame.flags.length}</td>
+                <td>
+                  {frame.flags.length === 0 ? (
+                    "—"
+                  ) : (
+                    <>
+                      {frame.flags.map((flag, index) => (
+                        <span
+                          key={index}
+                          className={`badge ${flag.kind === "link_down" ? "badge-err" : "badge-warn"}`}
+                        >
+                          {flag.kind === "link_down" ? `link_down:${flag.path_label}` : `degraded:${flag.subsystem}`}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

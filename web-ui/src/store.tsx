@@ -1,6 +1,8 @@
 import { create } from "zustand";
-import type { DeviceSummary, DeviceRecord, DeviceConfig, TelemetryFrame, Uuid } from "./types/sdwan";
+import type { AlertEvent, DeviceSummary, DeviceRecord, DeviceConfig, TelemetryFrame, Uuid, RegisterRequest } from "./types/sdwan";
 import { deleteDevice, fetchDevice, fetchDeviceConfig, fetchDevices, openConfigStream, postTelemetry, applyDeviceConfig } from "./api";
+import { fetchTelemetry } from "./api";
+import { fetchAlerts, putDeviceConfig, registerDevice, updateDevice } from "./api";
 
 export interface SdwanStore {
   token: string;
@@ -13,6 +15,8 @@ export interface SdwanStore {
   setDevicesLoading: (loading: boolean) => void;
   devicesError: string | null;
   setDevicesError: (error: string | null) => void;
+  alerts: AlertEvent[];
+  setAlerts: (alerts: AlertEvent[]) => void;
   deviceById: Record<string, DeviceRecord>;
   setDevice: (record: DeviceRecord) => void;
   configByDeviceId: Record<string, DeviceConfig>;
@@ -20,6 +24,11 @@ export interface SdwanStore {
   telemetryByDeviceId: Record<string, TelemetryFrame>;
   upsertTelemetry: (frame: TelemetryFrame) => void;
   loadDevices: () => Promise<void>;
+  loadTelemetry: () => Promise<void>;
+  loadAlerts: () => Promise<void>;
+  registerDevice: (req: RegisterRequest) => Promise<void>;
+  updateDevice: (id: string, meta: { org_id?: string; site_id?: string; hostname?: string }) => Promise<void>;
+  replaceDeviceConfig: (id: string, config: DeviceConfig) => Promise<void>;
   loadDevice: (id: string) => Promise<void>;
   removeDevice: (id: string) => Promise<void>;
   loadDeviceConfig: (id: string) => Promise<void>;
@@ -39,6 +48,8 @@ export const useSdwanStore = create<SdwanStore>((set, get) => ({
   setDevicesLoading: (devicesLoading) => set({ devicesLoading }),
   devicesError: null,
   setDevicesError: (devicesError) => set({ devicesError }),
+  alerts: [],
+  setAlerts: (alerts) => set({ alerts }),
   deviceById: {},
   setDevice: (record) =>
     set((state) => ({
@@ -62,6 +73,34 @@ export const useSdwanStore = create<SdwanStore>((set, get) => ({
     } catch (error) {
       set({ devicesError: error instanceof Error ? error.message : String(error), devicesLoading: false });
     }
+  },
+  loadTelemetry: async () => {
+    try {
+      const frames = await fetchTelemetry();
+      for (const frame of frames) get().upsertTelemetry(frame);
+    } catch {
+      // telemetry is best-effort; the dashboard falls back to empty states
+    }
+  },
+  loadAlerts: async () => {
+    try {
+      const alerts = await fetchAlerts();
+      set({ alerts });
+    } catch {
+      // alerts are best-effort
+    }
+  },
+  registerDevice: async (req) => {
+    await registerDevice(req);
+    await get().loadDevices();
+  },
+  updateDevice: async (id, meta) => {
+    await updateDevice(id, meta);
+    await get().loadDevices();
+  },
+  replaceDeviceConfig: async (id, config) => {
+    await putDeviceConfig(id, config);
+    get().setConfig(id, config);
   },
   loadDevice: async (id) => {
     try {

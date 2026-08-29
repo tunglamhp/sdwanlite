@@ -5,6 +5,9 @@ import {
   fetchDevices,
   fetchHealth,
   postTelemetry,
+  registerDevice,
+  fetchAlerts,
+  putDeviceConfig,
 } from './api';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -112,5 +115,52 @@ describe('api', () => {
     const onMessage = vi.fn();
     const es = eventsStream(onMessage);
     expect(es.url).toBe('/api/events');
+  });
+
+  test('registerDevice sends POST to /api/v1/devices/register and parses RegisterResponse', async () => {
+    const req = { hostname: 'edge-2', site_id: 's2' };
+    const response = { device_id: 'd2', registered: true };
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(jsonResponse(response));
+
+    const result = await registerDevice(req as any);
+
+    expect(result).toEqual(response);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/devices/register'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    );
+  });
+
+  test('fetchAlerts parses JSON array from /api/v1/alerts', async () => {
+    const alerts = [{ id: 'a1', severity: 'warning', message: 'High CPU usage' }];
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(jsonResponse(alerts));
+
+    const result = await fetchAlerts();
+
+    expect(result).toEqual(alerts);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/alerts'),
+      expect.anything(),
+    );
+  });
+
+  test('putDeviceConfig sends PUT with config body to /api/v1/devices/{id}/config', async () => {
+    const config = { interfaces: [] };
+    const response = { success: true };
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(jsonResponse(response));
+
+    const result = await putDeviceConfig('d1', config as any);
+
+    expect(result).toEqual(response);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/devices/d1/config'),
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify(config),
+      }),
+    );
   });
 });

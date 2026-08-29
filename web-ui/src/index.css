@@ -19,7 +19,7 @@
   color-scheme: light dark;
 }
 
-.dark {
+:root[data-theme="dark"] {
   --bg: #131311;
   --surface: #1c1b19;
   --border: #2b2a27;
@@ -47,6 +47,8 @@ body {
   min-height: 100vh;
 
   color: var(--ink);
+
+  background: var(--bg);
 }
 
 /* --- Sidebar --- */
@@ -297,6 +299,73 @@ table.data tr:hover td {
 }
 
 /* --- Focus & motion --- */
+/* --- Forms & detail --- */
+
+.form {
+  display: grid;
+  gap: 12px;
+  max-width: 640px;
+}
+
+.form-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-field label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.form-field input,
+.form-field select {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.detail {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.detail h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.status-ok {
+  color: var(--ok);
+}
+.status-warn {
+  color: var(--warn);
+}
+.status-err {
+  color: var(--err);
+}
 
 :focus-visible {
   outline: 2px solid var(--focus);
