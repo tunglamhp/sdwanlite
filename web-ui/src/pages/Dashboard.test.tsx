@@ -1,29 +1,52 @@
 import { describe, expect, test, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import Dashboard from './Dashboard';
 
-const mockFetchHealth = vi.fn();
+const { state, loadDevices } = vi.hoisted(() => {
+  const loadDevices = vi.fn();
+  const state = {
+    deviceSummaries: [
+      { device_id: 'd1', org_id: 'o1', site_id: 's1', hostname: 'edge-1' },
+    ],
+    devicesLoading: false,
+    devicesError: null as string | null,
+    telemetryByDeviceId: {
+      d1: {
+        device_id: 'd1',
+        org_id: 'o1',
+        uptime_secs: 3661,
+        links: [],
+        flags: [{ kind: 'link_down', path_label: 'internet' }],
+      },
+    },
+    loadDevices,
+  };
+  return { state, loadDevices };
+});
 
 vi.mock('../store', () => ({
-  useSdwanStore: () => ({
-    token: 'token',
-    deviceSummaries: [],
-    setDeviceSummaries: vi.fn(),
-  }),
+  useSdwanStore: (selector: (s: typeof state) => unknown) => selector(state),
 }));
 
-vi.mock('../api', () => ({
-  fetchHealth: () => mockFetchHealth(),
-}));
+loadDevices.mockResolvedValue(undefined);
 
 describe('Dashboard', () => {
-  test('renders health and devices sections', async () => {
-    mockFetchHealth.mockResolvedValue('ok');
+  test('renders device rows and status counts', () => {
+    render(<Dashboard />);
+
+    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByText('edge-1')).toBeInTheDocument();
+    expect(screen.getByText('1h 1m')).toBeInTheDocument();
+    expect(screen.getByText('Links down').parentElement?.querySelector('.card-value')?.textContent).toBe('1');
+    expect(loadDevices).toHaveBeenCalled();
+  });
+
+  test('renders empty state without devices', () => {
+    state.deviceSummaries = [];
+    state.telemetryByDeviceId = {};
 
     render(<Dashboard />);
 
-    await waitFor(() => screen.getByText('Health'));
-    expect(screen.getByText('Devices')).toBeInTheDocument();
-    expect(screen.getByText('ok')).toBeInTheDocument();
+    expect(screen.getByText('No devices registered.')).toBeInTheDocument();
   });
 });

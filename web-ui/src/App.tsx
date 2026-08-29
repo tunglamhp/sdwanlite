@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Router,
@@ -44,6 +44,18 @@ const nav = [
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
+const THEME_KEY = "sdwan.theme";
+
+function initialTheme(): "light" | "dark" {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // storage unavailable — fall through to system preference
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function Sidebar({ theme, toggle }: { theme: "light" | "dark"; toggle: () => void }) {
   const loc = useLocation();
   return (
@@ -52,27 +64,60 @@ function Sidebar({ theme, toggle }: { theme: "light" | "dark"; toggle: () => voi
         <span className="logo">SD-WAN</span>
         <span className="sub">Control Plane</span>
       </div>
-      <nav className="menu">
+      <nav className="menu" aria-label="Main">
         {nav.map((item) => {
           const Icon = item.icon;
           const active = loc.pathname === item.to || (item.to !== "/" && loc.pathname.startsWith(item.to));
           return (
-            <Link key={item.to} to={item.to} className={`menu-item ${active ? "active" : ""}`}>
-              <Icon size={16} />
+            <Link
+              key={item.to}
+              to={item.to}
+              className={`menu-item ${active ? "active" : ""}`}
+              aria-current={active ? "page" : undefined}
+            >
+              <Icon size={16} aria-hidden />
               <span>{item.label}</span>
             </Link>
           );
         })}
       </nav>
-      <button className="theme-toggle" onClick={toggle}>
-        {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
+      <button
+        type="button"
+        className="theme-toggle"
+        onClick={toggle}
+        aria-label="Toggle theme"
+        title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+      >
+        {theme === "light" ? <Moon size={16} aria-hidden /> : <Sun size={16} aria-hidden />}
+        <span>{theme === "light" ? "Dark" : "Light"}</span>
       </button>
     </aside>
   );
 }
 
+function NotFound() {
+  return (
+    <div className="page">
+      <h1>Page not found</h1>
+      <p className="empty">
+        <Link to="/">Back to Dashboard</Link>
+      </p>
+    </div>
+  );
+}
+
 function Layout() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(initialTheme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // storage unavailable — theme still applies for this session
+    }
+  }, [theme]);
+
   const toggle = () => setTheme((t) => (t === "light" ? "dark" : "light"));
   return (
     <div className={`app ${theme}`}>
@@ -90,7 +135,7 @@ function Layout() {
             <Route path="/bgp" element={<BGP />} />
             <Route path="/diagnostics" element={<Diagnostics />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Dashboard />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </main>
       </BrowserRouter>

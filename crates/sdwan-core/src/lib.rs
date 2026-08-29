@@ -652,6 +652,70 @@ pub struct QosClass {
     pub bandwidth_bps: u64,
 }
 
+/// Policy rule match criteria.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PolicyMatch {
+    /// Path label to match.
+    pub path_label: Option<String>,
+    /// L4 protocol.
+    pub protocol: Option<String>,
+    /// L4 port.
+    pub port: Option<u16>,
+    /// DSCP value.
+    pub dscp: Option<u8>,
+}
+
+/// Policy rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PolicyRule {
+    /// Verdict on match.
+    pub action: FirewallAction,
+    /// Match criteria.
+    pub match_: PolicyMatch,
+}
+
+/// Top-level policy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Policy {
+    /// Stable identifier.
+    pub id: Uuid,
+    /// Human-readable name.
+    pub name: String,
+    /// Ordered rules; first match wins.
+    pub rules: Vec<PolicyRule>,
+}
+
+/// BGP peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BgpPeer {
+    /// Peer IPv4 address.
+    pub peer_address: std::net::IpAddr,
+    /// Remote ASN.
+    pub remote_as: u32,
+    /// Enabled flag.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Free-form note.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// BGP configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BgpConfig {
+    /// Local ASN.
+    pub local_as: u32,
+    /// Router ID.
+    pub router_id: std::net::IpAddr,
+    /// Ordered peers.
+    #[serde(default)]
+    pub peers: Vec<BgpPeer>,
+}
+
 /// Full device configuration the controller pushes.
 ///
 /// Optimistic-locking via `version`: an agent MUST refuse any `DeviceConfig` whose

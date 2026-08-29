@@ -1,0 +1,71 @@
+name: Promote dev to main
+
+# Opens (or refreshes) the dev → main pull request only after dev's own
+# verification passes. Merging stays human; CI runs on the PR as an extra gate.
+#
+# If PR creation is blocked by the repo setting
+# "Allow GitHub Actions to create and approve pull requests", add a PAT with
+# `repo` scope as the `GH_PAT` repository secret — the workflow uses it
+# automatically. The exact failure reason is written to the job summary.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: Cargo build
+        run: cargo build --workspace
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+      - name: Web UI checks
+        working-directory: web-ui
+        run: npm ci && npm run lint && npm run build && npx vitest run
+
+  promote:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or refresh dev → main PR
+        uses: actions/github-script@v7
+        with:
+          token: ${{ secrets.GH_PAT || github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            try {
+              const { data: pulls } = await github.rest.pulls.list({
+                owner, repo, state: 'open', head: `${owner}:dev`, base: 'main',
+              });
+              const body = 'Auto-opened by CI after dev checks passed. Merge when dev is stable.';
+              if (pulls.length === 0) {
+                await github.rest.pulls.create({
+                  owner, repo, title: 'chore: promote dev → main',
+                  head: 'dev', base: 'main', body,
+                });
+                await core.summary.addRaw('✅ Opened PR `dev → main`.').write();
+              } else {
+                await github.rest.pulls.update({ owner, repo, pull_number: pulls[0].number, body });
+                await core.summary.addRaw(`✅ PR already open (#${pulls[0].number}) — body refreshed.`).write();
+              }
+            } catch (err) {
+              core.error(err.message);
+              await core.summary
+                .addRaw(`## Promote PR failed\n\n\`${err.message}\`\n\nIf this is a permissions error, enable *Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests*, or add a \`GH_PAT\` secret (repo scope).`)
+                .write();
+              core.setFailed(err.message);
+            }

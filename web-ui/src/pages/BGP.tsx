@@ -12,13 +12,30 @@ export default function BGP() {
   return (
     <div className="page">
       <h1>BGP</h1>
-      <ul>
-        {routes.map((route, index) => (
-          <li key={index}>
-            {route.destination} via {route.next_hop} {route.metric != null ? `metric ${route.metric}` : ""}
-          </li>
-        ))}
-      </ul>
+      {!selectedDeviceId ? (
+        <p className="empty">Select a device to view BGP routes.</p>
+      ) : routes.length === 0 ? (
+        <p className="empty">No BGP routes.</p>
+      ) : (
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Destination</th>
+              <th>Next hop</th>
+              <th>Metric</th>
+            </tr>
+          </thead>
+          <tbody>
+            {routes.map((route, index) => (
+              <tr key={index}>
+                <td>{route.destination}</td>
+                <td>{route.next_hop}</td>
+                <td>{route.metric ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

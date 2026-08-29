@@ -36,7 +36,7 @@ async function parseJson<T>(res: Response): Promise<T> {
     } catch {
       // ignore non-JSON error bodies
     }
-    throw new Error(body.error ?? body.message ?? `HTTP ${res.status}`);
+    throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   }
   return JSON.parse(text) as T;
 }
