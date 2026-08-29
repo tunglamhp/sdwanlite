@@ -12,14 +12,30 @@ export default function QoS() {
   return (
     <div className="page">
       <h1>QoS</h1>
-      <ul>
-        {classes.map((qosClass, index) => (
-          <li key={index}>
-            {qosClass.name} — DSCP {qosClass.dscp}
-            {typeof qosClass.bandwidth_bps === "number" ? `, ${qosClass.bandwidth_bps} bps` : ""}
-          </li>
-        ))}
-      </ul>
+      {!selectedDeviceId ? (
+        <p className="empty">Select a device to view QoS classes.</p>
+      ) : classes.length === 0 ? (
+        <p className="empty">No QoS classes.</p>
+      ) : (
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Class</th>
+              <th>DSCP</th>
+              <th>Bandwidth</th>
+            </tr>
+          </thead>
+          <tbody>
+            {classes.map((qosClass, index) => (
+              <tr key={index}>
+                <td>{qosClass.name}</td>
+                <td>{qosClass.dscp}</td>
+                <td>{typeof qosClass.bandwidth_bps === "number" ? `${qosClass.bandwidth_bps} bps` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
