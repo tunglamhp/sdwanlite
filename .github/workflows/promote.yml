@@ -63,6 +63,7 @@ jobs:
                 await core.summary.addRaw(`✅ PR already open (#${pulls[0].number}) — body refreshed.`).write();
               }
             } catch (err) {
+              core.error(err.message);
               await core.summary
                 .addRaw(`## Promote PR failed\n\n\`${err.message}\`\n\nIf this is a permissions error, enable *Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests*, or add a \`GH_PAT\` secret (repo scope).`)
                 .write();
