@@ -88,10 +88,12 @@ pub fn router(store: Arc<DeviceStore>, bootstrap_token: Arc<str>) -> Router {
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .route("/api/v1/devices/register", post(register))
-        .route("/api/v1/devices/:id/config", get(get_config))
+        .route("/api/v1/devices/:id", get(get_device).put(update_device).delete(delete_device))
+        .route("/api/v1/devices/:id/config", get(get_config).put(put_device_config))
         .route("/api/v1/devices/:id/apply", post(apply_config))
         .route("/api/v1/devices", get(list_devices))
         .route("/api/v1/telemetry", get(get_telemetry).post(post_telemetry))
+        .route("/api/v1/alerts", get(get_alerts))
         .route("/stream/config", get(stream_ws))
         .with_state(ControllerState {
             store,
@@ -207,6 +209,71 @@ async fn list_devices(
     let items = s.store.list().await?;
     Ok(Json(items))
 }
+async fn get_device(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+    Path(id): Path<DeviceId>,
+) -> Result<Json<DeviceRecord>> {
+    check_auth(&headers, &s.token)?;
+    let rec = s.store.get(id).await?;
+    Ok(Json(rec))
+}
+
+/// Partial metadata update; only fields present in the body change.
+#[derive(Clone, Debug, Deserialize)]
+struct UpdateDeviceBody {
+    org_id: Option<OrgId>,
+    site_id: Option<SiteId>,
+    hostname: Option<String>,
+}
+
+async fn update_device(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+    Path(id): Path<DeviceId>,
+    Json(body): Json<UpdateDeviceBody>,
+) -> Result<Json<DeviceRecord>> {
+    check_auth(&headers, &s.token)?;
+    let rec = s.store.update_meta(id, body.org_id, body.site_id, body.hostname).await?;
+    Ok(Json(rec))
+}
+
+async fn delete_device(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+    Path(id): Path<DeviceId>,
+) -> Result<StatusCode> {
+    check_auth(&headers, &s.token)?;
+    s.store.get(id).await?; // 404 when unknown
+    s.store.delete(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn put_device_config(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+    Path(id): Path<DeviceId>,
+    Json(config): Json<DeviceConfig>,
+) -> Result<Json<DeviceRecord>> {
+    check_auth(&headers, &s.token)?;
+    let rec = s.store.get(id).await?;
+    if config.org_id != rec.org_id {
+        return Err(AgentError::OrgMismatch {
+            incoming: config.org_id.to_string(),
+            current: rec.org_id.to_string(),
+        });
+    }
+    let updated = s.store.replace_config(id, config).await?;
+    Ok(Json(updated))
+}
+
+async fn get_alerts(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::store::AlertEvent>>> {
+    check_auth(&headers, &s.token)?;
+    Ok(Json(s.store.alerts().await))
+}
 
 async fn apply_config(
     State(s): State<ControllerState>,
@@ -272,6 +339,29 @@ async fn post_telemetry(
         "telemetry frame"
     );
     s.store.insert_telemetry(&frame).await?;
+    let hostname = rec.current.hostname.clone();
+    let keys: Vec<String> = frame
+        .flags
+        .iter()
+        .map(|f| match f {
+            crate::telemetry::HealthFlag::LinkDown { path_label } => {
+                format!("link_down:{path_label}")
+            }
+            crate::telemetry::HealthFlag::Degraded { subsystem } => {
+                format!("degraded:{subsystem}")
+            }
+        })
+        .collect();
+    for key in s.store.new_alert_flags(frame.device_id, keys).await {
+        let (kind, title) = match key.split_once(':') {
+            Some(("link_down", label)) => {
+                ("link_down", format!("{hostname}: link down ({label})"))
+            }
+            Some(("degraded", sub)) => ("degraded", format!("{hostname}: degraded ({sub})")),
+            _ => continue,
+        };
+        s.store.push_alert(kind, title, None).await;
+    }
     Ok(Json(serde_json::json!({ "accepted": true })))
 }
 

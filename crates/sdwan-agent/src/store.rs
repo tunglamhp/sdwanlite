@@ -76,7 +76,7 @@ impl MemoryStore {
 impl Storage for MemoryStore {
     fn insert_device(&self, rec: &DeviceRecord) -> AgentResult<()> {
         let mut g = self.inner.lock().unwrap();
-        g.entry(rec.current.device_id).or_insert(rec.clone());
+        g.insert(rec.current.device_id, rec.clone());
         Ok(())
     }
 
@@ -302,6 +302,17 @@ pub struct DeviceStore {
     storage: Arc<dyn Storage>,
     broadcasts: Arc<Mutex<std::collections::HashMap<DeviceId, broadcast::Sender<DeviceConfig>>>>,
     telemetry: Arc<Mutex<std::collections::HashMap<DeviceId, crate::telemetry::TelemetryFrame>>>,
+    alerts: Arc<Mutex<Vec<AlertEvent>>>,
+    alerted_flags: Arc<Mutex<std::collections::HashMap<DeviceId, std::collections::HashSet<String>>>>,
+}
+/// One controller alert (link down, degraded, ...). Newest last.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+pub struct AlertEvent {
+    pub id: u64,
+    pub kind: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub at: String,
 }
 
 impl DeviceStore {
@@ -311,6 +322,8 @@ impl DeviceStore {
             storage: Arc::new(MemoryStore::new()),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            alerts: Arc::new(Mutex::new(Vec::new())),
+            alerted_flags: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -321,6 +334,8 @@ impl DeviceStore {
             storage: Arc::new(backend),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            alerts: Arc::new(Mutex::new(Vec::new())),
+            alerted_flags: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }))
     }
 
@@ -361,7 +376,46 @@ impl DeviceStore {
     pub async fn delete(&self, id: DeviceId) -> AgentResult<()> {
         self.storage.delete_device(id)?;
         self.broadcasts.lock().await.remove(&id);
+        self.telemetry.lock().await.remove(&id);
+        self.alerted_flags.lock().await.remove(&id);
         Ok(())
+    }
+    /// Update device metadata (only fields provided).
+    pub async fn update_meta(
+        &self,
+        id: DeviceId,
+        org_id: Option<OrgId>,
+        site_id: Option<SiteId>,
+        hostname: Option<String>,
+    ) -> AgentResult<DeviceRecord> {
+        let mut rec = self.storage.get_device(id)?;
+        if let Some(org) = org_id {
+            rec.org_id = org;
+        }
+        if let Some(site) = site_id {
+            rec.site_id = site;
+        }
+        if let Some(name) = hostname {
+            rec.hostname = name.clone();
+            rec.current.hostname = name;
+        }
+        self.storage.insert_device(&rec)?;
+        Ok(rec)
+    }
+
+    /// Flag keys that appeared since the previous telemetry frame (alert on
+    /// state transitions only, so a repeating flag does not spam alerts).
+    pub async fn new_alert_flags(
+        &self,
+        device_id: DeviceId,
+        keys: Vec<String>,
+    ) -> Vec<String> {
+        let mut guard = self.alerted_flags.lock().await;
+        let prev = guard.entry(device_id).or_default();
+        let fresh: Vec<String> = keys.iter().filter(|k| !prev.contains(*k)).cloned().collect();
+        prev.clear();
+        prev.extend(keys);
+        fresh
     }
 
     /// List all devices.
@@ -385,6 +439,32 @@ impl DeviceStore {
     pub async fn latest_telemetry(&self) -> Vec<crate::telemetry::TelemetryFrame> {
         let guard = self.telemetry.lock().await;
         guard.values().cloned().collect()
+    }
+    /// Append an alert to the ring buffer (keeps the newest 100).
+    pub async fn push_alert(&self, kind: &str, title: String, detail: Option<String>) {
+        let mut guard = self.alerts.lock().await;
+        let id = guard.last().map(|a| a.id + 1).unwrap_or(1);
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
+        guard.push(AlertEvent {
+            id,
+            kind: kind.to_string(),
+            title,
+            detail,
+            at,
+        });
+        if guard.len() > 100 {
+            let excess = guard.len() - 100;
+            guard.drain(0..excess);
+        }
+    }
+
+    /// All alerts, oldest first.
+
+    pub async fn alerts(&self) -> Vec<AlertEvent> {
+        self.alerts.lock().await.clone()
     }
 
     /// Subscribe to config pushes for a device.

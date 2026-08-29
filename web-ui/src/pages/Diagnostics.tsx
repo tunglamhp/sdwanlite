@@ -33,7 +33,22 @@ export default function Diagnostics() {
                 <td>{frame.device_id}</td>
                 <td>{formatUptime(frame.uptime_secs)}</td>
                 <td>{frame.links.length}</td>
-                <td>{frame.flags.length}</td>
+                <td>
+                  {frame.flags.length === 0 ? (
+                    "—"
+                  ) : (
+                    <>
+                      {frame.flags.map((flag, index) => (
+                        <span
+                          key={index}
+                          className={`badge ${flag.kind === "link_down" ? "badge-err" : "badge-warn"}`}
+                        >
+                          {flag.kind === "link_down" ? `link_down:${flag.path_label}` : `degraded:${flag.subsystem}`}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

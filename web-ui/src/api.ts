@@ -1,4 +1,4 @@
-import type { DeviceSummary, DeviceRecord, DeviceConfig, ApplyResponse, TelemetryFrame } from "./types/sdwan";
+import type { AlertEvent, DeviceSummary, DeviceRecord, DeviceConfig, ApplyResponse, TelemetryFrame, RegisterRequest, RegisterResponse } from "./types/sdwan";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -47,6 +47,39 @@ export async function fetchHealth(): Promise<string> {
     throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   }
   return res.text();
+}
+export async function registerDevice(req: RegisterRequest): Promise<RegisterResponse> {
+  return parseJson<RegisterResponse>(
+    await request("/api/v1/devices/register", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  );
+}
+
+export async function updateDevice(
+  id: string,
+  meta: { org_id?: string; site_id?: string; hostname?: string },
+): Promise<unknown> {
+  return parseJson<unknown>(
+    await request(`/api/v1/devices/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(meta),
+    }),
+  );
+}
+
+export async function putDeviceConfig(id: string, config: DeviceConfig): Promise<unknown> {
+  return parseJson<unknown>(
+    await request(`/api/v1/devices/${encodeURIComponent(id)}/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  );
+}
+
+export async function fetchAlerts(): Promise<AlertEvent[]> {
+  return parseJson<AlertEvent[]>(await request("/api/v1/alerts"));
 }
 
 export async function fetchDevices(): Promise<DeviceSummary[]> {

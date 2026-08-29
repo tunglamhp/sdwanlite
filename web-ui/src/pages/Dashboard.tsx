@@ -1,4 +1,13 @@
 import { useEffect, useMemo } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { useSdwanStore } from "../store";
 import { formatUptime } from "../format";
 
@@ -6,14 +15,17 @@ export default function Dashboard() {
   const deviceSummaries = useSdwanStore((state) => state.deviceSummaries);
   const loadDevices = useSdwanStore((state) => state.loadDevices);
   const loadTelemetry = useSdwanStore((state) => state.loadTelemetry);
+  const loadAlerts = useSdwanStore((state) => state.loadAlerts);
   const devicesLoading = useSdwanStore((state) => state.devicesLoading);
   const devicesError = useSdwanStore((state) => state.devicesError);
   const telemetryByDeviceId = useSdwanStore((state) => state.telemetryByDeviceId);
+  const alerts = useSdwanStore((state) => state.alerts);
 
   useEffect(() => {
     loadDevices().catch(() => undefined);
     loadTelemetry().catch(() => undefined);
-  }, [loadDevices, loadTelemetry]);
+    loadAlerts().catch(() => undefined);
+  }, [loadDevices, loadTelemetry, loadAlerts]);
 
   const signals = useMemo(() => {
     let uptimeSecs = 0;
@@ -28,6 +40,18 @@ export default function Dashboard() {
     }
     return { uptimeSecs, linkDown, degraded };
   }, [telemetryByDeviceId]);
+
+  const chartData = useMemo(
+    () =>
+      Object.values(telemetryByDeviceId).map((frame) => {
+        const tx = frame.links.reduce((sum, link) => sum + link.tx_bytes, 0);
+        const rx = frame.links.reduce((sum, link) => sum + link.rx_bytes, 0);
+        const hostname =
+          deviceSummaries.find((d) => d.device_id === frame.device_id)?.hostname ?? frame.device_id.slice(0, 8);
+        return { name: hostname, TX: tx, RX: rx };
+      }),
+    [telemetryByDeviceId, deviceSummaries],
+  );
 
   const devices = deviceSummaries.length;
 
@@ -53,6 +77,54 @@ export default function Dashboard() {
           <div className="card-value">{formatUptime(signals.uptimeSecs)}</div>
         </div>
       </div>
+
+      {chartData.length > 0 ? (
+        <div className="detail">
+          <h2>Traffic (bytes)</h2>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" fontSize={11} />
+              <YAxis fontSize={11} />
+              <Tooltip />
+              <Bar dataKey="TX" fill="#2563eb" />
+              <Bar dataKey="RX" fill="#1a7f4b" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : null}
+
+      <h2>Alerts</h2>
+      {alerts.length === 0 ? (
+        <p className="empty">No alerts.</p>
+      ) : (
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Title</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...alerts].reverse().map((alert) => (
+              <tr key={alert.id}>
+                <td>
+                  <span className={`badge ${alert.kind === "link_down" ? "badge-err" : "badge-warn"}`}>
+                    {alert.kind}
+                  </span>
+                </td>
+                <td>
+                  {alert.title}
+                  {alert.detail ? <span className="hint"> — {alert.detail}</span> : null}
+                </td>
+                <td>{alert.at}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
       <h2>Devices</h2>
       {devicesLoading ? (
         <p className="empty">Loading devices…</p>
