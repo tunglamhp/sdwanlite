@@ -1,0 +1,67 @@
+name: Promote dev to main
+
+# Opens (or updates) the dev → main pull request only after dev's own
+# verification passes. Merging stays human; CI runs on the PR as an extra gate.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: Cargo build
+        run: cargo build --workspace
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+      - name: Web UI lint
+        working-directory: web-ui
+        run: npm ci && npm run lint && npm run build && npx vitest run
+
+  promote:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or refresh dev → main PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:dev`,
+              base: 'main',
+            });
+            const body = 'Auto-opened by CI after dev checks passed. Merge when dev is stable.';
+            if (pulls.length === 0) {
+              await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'chore: promote dev → main',
+                head: 'dev',
+                base: 'main',
+                body,
+              });
+            } else {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pulls[0].number,
+                body,
+              });
+            }
