@@ -1,7 +1,7 @@
 # SDWANLite
 
 SD-WAN control plane + edge agent written in Rust, with a React web UI.
-Clean-room, learning-oriented implementation. **Version 0.2.0**
+Clean-room, learning-oriented implementation. **Version 0.3.0**
 
 ## Kiến trúc
 
@@ -47,7 +47,7 @@ Kernel-affecting actions chỉ chạy khi có `--enable-live-actions`.
 | `POST /telemetry` | Edge agent gửi telemetry (uptime, links, flags) |
 | `GET /alerts` | Danh sách alert (ring buffer, tối đa 100) |
 
-## Thay đổi trong v0.2.0
+## Thay đổi trong v0.3.0
 
 - **Device CRUD hoàn chỉnh**: register, get/update/delete, áp cấu hình qua API.
 - **Alerts**: backend sinh alert khi flag chuyển trạng thái (không spam); hiển thị feed trên Dashboard.
