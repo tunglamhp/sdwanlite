@@ -91,7 +91,7 @@ pub fn router(store: Arc<DeviceStore>, bootstrap_token: Arc<str>) -> Router {
         .route("/api/v1/devices/:id/config", get(get_config))
         .route("/api/v1/devices/:id/apply", post(apply_config))
         .route("/api/v1/devices", get(list_devices))
-        .route("/api/v1/telemetry", post(post_telemetry))
+        .route("/api/v1/telemetry", get(get_telemetry).post(post_telemetry))
         .route("/stream/config", get(stream_ws))
         .with_state(ControllerState {
             store,
@@ -169,6 +169,7 @@ async fn register(
 
     let rec = DeviceRecord {
         org_id: req.org_id,
+        device_id: req.device_id,
         site_id: req.site_id,
         hostname: req.hostname,
         state: sdwan_core::DeviceState::Connected,
@@ -236,6 +237,15 @@ async fn apply_config(
     }))
 }
 
+/// Latest telemetry frame per registered device.
+async fn get_telemetry(
+    State(s): State<ControllerState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TelemetryFrame>>> {
+    check_auth(&headers, &s.token)?;
+    Ok(Json(s.store.latest_telemetry().await))
+}
+
 async fn post_telemetry(
     State(s): State<ControllerState>,
     headers: HeaderMap,
@@ -269,6 +279,10 @@ async fn post_telemetry(
 #[derive(Clone, Debug, serde::Deserialize)]
 struct StreamQuery {
     device_id: DeviceId,
+    /// Browser WebSockets cannot set headers; accept the token as a query
+    /// fallback (constant-time compare, same secret as the header path).
+    #[serde(default)]
+    token: Option<String>,
 }
 
 async fn stream_ws(
@@ -277,7 +291,19 @@ async fn stream_ws(
     axum::extract::Query(q): axum::extract::Query<StreamQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<axum::response::Response> {
-    check_auth(&headers, &s.token)?;
+    let header_ok = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|h| bool_eq(h.as_bytes(), format!("Bearer {}", s.token).as_bytes()))
+        .unwrap_or(false);
+    let query_ok = q
+        .token
+        .as_deref()
+        .map(|t| bool_eq(t.as_bytes(), s.token.as_bytes()))
+        .unwrap_or(false);
+    if !(header_ok || query_ok) {
+        return Err(AgentError::Unauthorized);
+    }
     let _rec = s.store.get(q.device_id).await?;
     Ok(ws.on_upgrade(move |socket| async move {
         let (mut tx, mut rx) = socket.split();

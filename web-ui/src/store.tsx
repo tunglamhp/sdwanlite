@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { DeviceSummary, DeviceRecord, DeviceConfig, TelemetryFrame, Uuid } from "./types/sdwan";
 import { deleteDevice, fetchDevice, fetchDeviceConfig, fetchDevices, openConfigStream, postTelemetry, applyDeviceConfig } from "./api";
+import { fetchTelemetry } from "./api";
 
 export interface SdwanStore {
   token: string;
@@ -20,6 +21,7 @@ export interface SdwanStore {
   telemetryByDeviceId: Record<string, TelemetryFrame>;
   upsertTelemetry: (frame: TelemetryFrame) => void;
   loadDevices: () => Promise<void>;
+  loadTelemetry: () => Promise<void>;
   loadDevice: (id: string) => Promise<void>;
   removeDevice: (id: string) => Promise<void>;
   loadDeviceConfig: (id: string) => Promise<void>;
@@ -61,6 +63,14 @@ export const useSdwanStore = create<SdwanStore>((set, get) => ({
       set({ deviceSummaries: items, devicesLoading: false });
     } catch (error) {
       set({ devicesError: error instanceof Error ? error.message : String(error), devicesLoading: false });
+    }
+  },
+  loadTelemetry: async () => {
+    try {
+      const frames = await fetchTelemetry();
+      for (const frame of frames) get().upsertTelemetry(frame);
+    } catch {
+      // telemetry is best-effort; the dashboard falls back to empty states
     }
   },
   loadDevice: async (id) => {

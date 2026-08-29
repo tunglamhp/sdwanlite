@@ -25,8 +25,12 @@ export default function Devices() {
   const select = (id: Uuid) => {
     setSelectedDeviceId(id);
     stopStreamRef.current?.();
-    stopStreamRef.current = startConfigStream(id);
     loadDeviceConfig(id).catch(() => undefined);
+    try {
+      stopStreamRef.current = startConfigStream(id);
+    } catch {
+      stopStreamRef.current = null;
+    }
   };
 
   const deregister = (id: Uuid, hostname: string) => {

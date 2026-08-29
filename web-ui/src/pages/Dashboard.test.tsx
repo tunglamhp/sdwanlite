@@ -2,8 +2,9 @@ import { describe, expect, test, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import Dashboard from './Dashboard';
 
-const { state, loadDevices } = vi.hoisted(() => {
+const { state, loadDevices, loadTelemetry } = vi.hoisted(() => {
   const loadDevices = vi.fn();
+  const loadTelemetry = vi.fn();
   const state = {
     deviceSummaries: [
       { device_id: 'd1', org_id: 'o1', site_id: 's1', hostname: 'edge-1' },
@@ -20,8 +21,9 @@ const { state, loadDevices } = vi.hoisted(() => {
       },
     },
     loadDevices,
+    loadTelemetry,
   };
-  return { state, loadDevices };
+  return { state, loadDevices, loadTelemetry };
 });
 
 vi.mock('../store', () => ({
@@ -29,6 +31,7 @@ vi.mock('../store', () => ({
 }));
 
 loadDevices.mockResolvedValue(undefined);
+loadTelemetry.mockResolvedValue(undefined);
 
 describe('Dashboard', () => {
   test('renders device rows and status counts', () => {
@@ -39,6 +42,7 @@ describe('Dashboard', () => {
     expect(screen.getByText('1h 1m')).toBeInTheDocument();
     expect(screen.getByText('Links down').parentElement?.querySelector('.card-value')?.textContent).toBe('1');
     expect(loadDevices).toHaveBeenCalled();
+    expect(loadTelemetry).toHaveBeenCalled();
   });
 
   test('renders empty state without devices', () => {

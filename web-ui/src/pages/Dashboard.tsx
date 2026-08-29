@@ -5,13 +5,15 @@ import { formatUptime } from "../format";
 export default function Dashboard() {
   const deviceSummaries = useSdwanStore((state) => state.deviceSummaries);
   const loadDevices = useSdwanStore((state) => state.loadDevices);
+  const loadTelemetry = useSdwanStore((state) => state.loadTelemetry);
   const devicesLoading = useSdwanStore((state) => state.devicesLoading);
   const devicesError = useSdwanStore((state) => state.devicesError);
   const telemetryByDeviceId = useSdwanStore((state) => state.telemetryByDeviceId);
 
   useEffect(() => {
     loadDevices().catch(() => undefined);
-  }, [loadDevices]);
+    loadTelemetry().catch(() => undefined);
+  }, [loadDevices, loadTelemetry]);
 
   const signals = useMemo(() => {
     let uptimeSecs = 0;

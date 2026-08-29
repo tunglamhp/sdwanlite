@@ -1,9 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useSdwanStore } from "../store";
 import { formatUptime } from "../format";
 
 export default function Diagnostics() {
+  const loadTelemetry = useSdwanStore((state) => state.loadTelemetry);
   const telemetryByDeviceId = useSdwanStore((state) => state.telemetryByDeviceId);
+
+  useEffect(() => {
+    loadTelemetry().catch(() => undefined);
+  }, [loadTelemetry]);
+
   const frames = useMemo(() => Object.values(telemetryByDeviceId), [telemetryByDeviceId]);
 
   return (

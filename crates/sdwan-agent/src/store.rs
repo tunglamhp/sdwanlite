@@ -253,6 +253,9 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
     let hostname: String = row.get(3)?;
     Ok(DeviceRecord {
         org_id: org_id_str.parse::<OrgId>().expect("invalid org_id in db"),
+        device_id: device_id_str
+            .parse::<DeviceId>()
+            .expect("invalid device_id in db"),
         site_id: site_id_str
             .parse::<SiteId>()
             .expect("invalid site_id in db"),
@@ -283,6 +286,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
 pub struct DeviceRecord {
     pub org_id: OrgId,
+    pub device_id: DeviceId,
     pub site_id: SiteId,
     pub hostname: String,
     pub state: DeviceState,
@@ -297,6 +301,7 @@ pub struct DeviceRecord {
 pub struct DeviceStore {
     storage: Arc<dyn Storage>,
     broadcasts: Arc<Mutex<std::collections::HashMap<DeviceId, broadcast::Sender<DeviceConfig>>>>,
+    telemetry: Arc<Mutex<std::collections::HashMap<DeviceId, crate::telemetry::TelemetryFrame>>>,
 }
 
 impl DeviceStore {
@@ -305,6 +310,7 @@ impl DeviceStore {
         Arc::new(Self {
             storage: Arc::new(MemoryStore::new()),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -314,6 +320,7 @@ impl DeviceStore {
         Ok(Arc::new(Self {
             storage: Arc::new(backend),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }))
     }
 
@@ -368,7 +375,16 @@ impl DeviceStore {
         frame: &crate::telemetry::TelemetryFrame,
     ) -> AgentResult<()> {
         self.storage.insert_telemetry(frame)?;
+        self.telemetry
+            .lock()
+            .await
+            .insert(frame.device_id.clone(), frame.clone());
         Ok(())
+    }
+    /// Latest telemetry frame per device (in-memory; P1 adds persistence reads).
+    pub async fn latest_telemetry(&self) -> Vec<crate::telemetry::TelemetryFrame> {
+        let guard = self.telemetry.lock().await;
+        guard.values().cloned().collect()
     }
 
     /// Subscribe to config pushes for a device.

@@ -19,7 +19,7 @@
   color-scheme: light dark;
 }
 
-.dark {
+:root[data-theme="dark"] {
   --bg: #131311;
   --surface: #1c1b19;
   --border: #2b2a27;
@@ -47,6 +47,8 @@ body {
   min-height: 100vh;
 
   color: var(--ink);
+
+  background: var(--bg);
 }
 
 /* --- Sidebar --- */

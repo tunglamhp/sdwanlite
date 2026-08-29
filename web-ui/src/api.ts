@@ -67,6 +67,9 @@ export async function deleteDevice(id: string): Promise<void> {
 export async function fetchDeviceConfig(id: string): Promise<DeviceConfig> {
   return parseJson<DeviceConfig>(await request(`/api/v1/devices/${encodeURIComponent(id)}/config`));
 }
+export async function fetchTelemetry(): Promise<TelemetryFrame[]> {
+  return parseJson<TelemetryFrame[]>(await request("/api/v1/telemetry"));
+}
 
 export async function applyDeviceConfig(id: string, config: DeviceConfig): Promise<ApplyResponse> {
   return parseJson<ApplyResponse>(
@@ -101,7 +104,8 @@ export function openConfigStream(
   onError?: (err: Event) => void,
 ): WebSocket {
   const token = readToken();
-  const wsUrl = new URL(`${BASE.replace(/^http/, "ws")}/stream/config`);
+  const base = BASE ? BASE.replace(/^http/, "ws") : "";
+  const wsUrl = new URL(`${base}/stream/config`, window.location.origin);
   wsUrl.searchParams.set("device_id", deviceId);
   if (token) {
     wsUrl.searchParams.set("token", token);
