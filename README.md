@@ -1,115 +1,63 @@
-# <img src="docs/sdwanlite-logo.svg" alt="SDWANLite logo" width="72" align="top"/> SDWANLite
+# SDWANLite
 
-A clean-room, learning-oriented SD-WAN edge + load balancer written in Rust.
-Original implementation — not a fork of any existing appliance.
+SD-WAN control plane + edge agent written in Rust, with a React web UI.
+Clean-room, learning-oriented implementation. **Version 0.2.0**
 
-## Components
+## Kiến trúc
 
-| Crate | Purpose |
+| Thành phần | Vai trò |
 |---|---|
-| `core` | TOML configuration model, shared types |
-| `lb` | L4 TCP load balancer + HTTP reverse proxy with TLS termination, **HTTP/2 upstream support**, hot-reloadable TLS acceptors, host/path routing, TCP & HTTP health checks, byte counters, connection limits, runtime backend management |
-| `mesh` | WireGuard mesh control plane: native Curve25519 keypairs, `wg-quick` + `wg setconf` rendering, live peer add/remove, config validation, status via `wg` tools (Linux) |
-| `bgp` | RFC 4271 lab speaker: capabilities negotiation (AS4, route refresh), negotiated hold timers, best-path RIB by AS-path length with multipath option, per-neighbor import/export allowlists |
-| `acme` | Let's Encrypt automation: HTTP-01 challenge server, certificate issuance and daily renewal loop |
-| `app` (`sdwanlited`) | REST API + embedded dark-theme dashboard |
+| `sdwan-agent` | Edge agent **hoặc** controller. Agent báo telemetry & nhận cấu hình qua WS; controller cấp phát thiết bị, lưu cấu hình, sinh alerts. |
+| `web-ui` | Dashboard React (Vite + TypeScript): Devices CRUD, config editor (firewall/routes/QoS/path-labels), Topology, Diagnostics, Path Labels, Policies, BGP. |
+| Crates Rust | `core`, `sdwan-core`, `lb` (load balancer), `mesh` (WireGuard), `bgp`, `acme`, `app` (sdwanlited). |
 
 ## Build
 
 ```bash
-cargo build --release
+cargo build --release            # sdwan-agent
+cd web-ui && npm ci && npm run build
 ```
 
 ## Run
 
+Controller (mặc định bind loopback):
+
 ```bash
-./target/release/sdwanlited sdwanlite.toml
-# dashboard: http://127.0.0.1:8080/
+cargo run -p sdwan-agent -- --mode controller --bind 127.0.0.1:8090 \
+  --bootstrap-token <token>
+# web UI: http://127.0.0.1:5199  (chạy `web-ui: npm run dev`)
 ```
 
-If no config file is found a built-in demo config is used.
+Edge agent:
 
-### Example config
-
-```toml
-[general]
-name = "edge-1"
-api_port = 8080
-
-[mesh]
-enabled = true
-private_key = "<base64 key from POST-less GET /api/mesh/keypair>"
-listen_port = 51820
-
-[[mesh.peers]]
-name = "site-b"
-public_key = "<peer public key>"
-endpoint = "203.0.113.2:51820"
-allowed_ips = ["10.100.0.2/32"]
-
-[bgp]
-enabled = true
-router_id = "10.100.0.1"
-local_as = 65000
-networks = ["10.100.0.0/24"]
-[[bgp.neighbors]]
-ip = "10.100.0.2"
-remote_as = 65000
-
-[[lb.tcp]]
-name = "web-cluster"
-listen = "0.0.0.0:9000"
-algorithm = "least_connections"
-backends = ["10.100.0.11:80", "10.100.0.12:80"]
-
-[[lb.http]]
-name = "api-gateway"
-listen = "0.0.0.0:9090"
-[[lb.http.routes]]
-path_prefix = "/v1/"
-backends = ["10.100.0.21:8080"]
+```bash
+cargo run -p sdwan-agent -- --controller http://127.0.0.1:8090 \
+  --bootstrap-token <token> --device-id <uuid>
 ```
 
-## API
+Kernel-affecting actions chỉ chạy khi có `--enable-live-actions`.
 
-| Endpoint | Description |
+## API (`/api/v1`)
+
+| Endpoint | Mô tả |
 |---|---|
-| `GET /` | Web dashboard |
-| `GET /api/status` | Node, mesh and BGP summary |
-| `GET /api/lb` | Pool/backend health and counters |
-| `GET /api/mesh/keypair` | Generate WireGuard keypair |
-| `GET /api/bgp/rib` | Learned prefixes |
+| `POST /devices/register` | Đăng ký thiết bị mới |
+| `GET /devices` · `GET/PUT/DELETE /devices/:id` | CRUD thiết bị |
+| `PUT /devices/:id/config` | Áp cấu hình (firewall/routes/QoS/path-labels) — phiên bản phải tăng |
+| `POST /telemetry` | Edge agent gửi telemetry (uptime, links, flags) |
+| `GET /alerts` | Danh sách alert (ring buffer, tối đa 100) |
 
-## Status & roadmap
+## Thay đổi trong v0.2.0
 
-Working today: L4 + L7 load balancing with TCP **and** HTTP health checks,
-byte counters, connection limits, graceful stop, runtime backend management
-(`POST /api/lb/tcp/:name/backends`), **TLS termination with hot-reload**,
-**HTTP/2 upstream** support, WireGuard mesh control plane (keypairs,
-validation, `wg-quick`/`wg setconf` rendering, live peer management),
-BGP with capabilities negotiation, route refresh, hold timers, local-pref +
-allowlist policies, best-path/multipath RIB and lab-grade **route reflection**
-(CLUSTER_LIST loop prevention), Let's Encrypt automation
-(HTTP-01 + daily renewal), Prometheus `/metrics`, config reload API, and an
-embedded dark-theme dashboard.
+- **Device CRUD hoàn chỉnh**: register, get/update/delete, áp cấu hình qua API.
+- **Alerts**: backend sinh alert khi flag chuyển trạng thái (không spam); hiển thị feed trên Dashboard.
+- **Web UI mới** (React thay Dioxus cũ): form Add device, config editor với nút Apply (tự tăng version, có xác nhận "verified"), Topology theo telemetry thật, Diagnostics chi tiết, chart băng thông TX/RX.
+- **Bảo mật**: bind loopback mặc định, auth bằng bearer token, `--enable-live-actions` để mở action kernel.
+- Kiểm thử: `cargo test` 38/38, `vitest` 17/17, lint + build sạch.
 
-Known limitations (learning project): BGP policy framework is limited to
-local-pref and prefix allowlists (no communities / MED / full policy language);
-wildcard ACME certificates work via DNS-01 with a Cloudflare token
-(request rewriting wrapper); mesh apply requires Linux plus the `wg` tools;
-h2 upstream is bridge-grade rather than a full proxy implementation.
+## CI
 
-## Production
-
-See [PRODUCTION.md](PRODUCTION.md): systemd unit, Docker/Compose packaging
-(kernel WireGuard inside the container), GHCR images, and an off-the-shelf
-Caddy edge profile for client-facing HTTP/2 + automatic HTTPS.
-
-## CI & releases
-
-- Push to `main`/`dev` runs the full test suite (GitHub Actions).
-- Pushing a tag (`v*`) automatically builds Linux + Windows release binaries
-  and creates a GitHub Release with assets — no manual packaging.
+Push lên `main`/`dev` chạy: `cargo test` + build + audit + web checks. Tag `v*` tự build release binaries (Linux/Windows) và tạo GitHub Release.
 
 ## License
 
