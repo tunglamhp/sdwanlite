@@ -24,9 +24,10 @@ jobs:
     needs: test
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT || github.token }}
+          token: ${{ secrets.GH_PAT }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Auto-fix
@@ -43,7 +44,12 @@ jobs:
             git push
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Require GH_PAT
+        if: ${{ ! secrets.GH_PAT }}
+        run: |
+          echo "::error::Missing required secret GH_PAT with repo scope for auto-fix push."
+          exit 1
 
   security-audit:
     runs-on: ubuntu-latest
