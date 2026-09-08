@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSdwanStore } from "../store";
 import type { Uuid } from "../types/sdwan";
 import DeviceDetail from "../components/DeviceDetail";
+import FormField from "../components/FormField";
 
 export default function Devices() {
   const deviceSummaries = useSdwanStore((state) => state.deviceSummaries);
@@ -92,22 +93,23 @@ export default function Devices() {
       <div className="detail">
         <h2>Add device</h2>
         {formError ? <div className="alert">{formError}</div> : null}
-        <div className="form-row">
-          <div className="form-field">
-            <label htmlFor="dev-hostname">Hostname</label>
-            <input id="dev-hostname" value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="edge-hanoi-01" />
+        <div className="form">
+          <div className="form-row">
+            <FormField label="Hostname" htmlFor="dev-hostname">
+              <input id="dev-hostname" value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="edge-hanoi-01" />
+            </FormField>
+            <FormField label="Org ID (UUID, optional)" htmlFor="dev-org">
+              <input id="dev-org" value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="auto-generate" />
+            </FormField>
+            <FormField label="Site ID (UUID, optional)" htmlFor="dev-site">
+              <input id="dev-site" value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="auto-generate" />
+            </FormField>
           </div>
-          <div className="form-field">
-            <label htmlFor="dev-org">Org ID (UUID, optional)</label>
-            <input id="dev-org" value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="auto-generate" />
+          <div className="form-row">
+            <button type="button" className="btn" onClick={submitRegister} disabled={registering}>
+              {registering ? "Registering…" : "Register"}
+            </button>
           </div>
-          <div className="form-field">
-            <label htmlFor="dev-site">Site ID (UUID, optional)</label>
-            <input id="dev-site" value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="auto-generate" />
-          </div>
-          <button type="button" className="btn" onClick={submitRegister} disabled={registering}>
-            {registering ? "Registering…" : "Register"}
-          </button>
         </div>
       </div>
 
@@ -137,7 +139,7 @@ export default function Devices() {
                 <td>
                   <button type="button" className="btn" onClick={() => select(device.device_id)}>
                     Select
-                  </button>{" "}
+                  </button>
                   <button
                     type="button"
                     className="btn btn-danger"

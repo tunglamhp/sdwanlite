@@ -11,7 +11,7 @@ function readToken(): string | null {
   }
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -27,18 +27,28 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
-async function parseJson<T>(res: Response): Promise<T> {
+export async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     let body: { error?: string; message?: string } = {};
     try {
       body = JSON.parse(text) as { error?: string; message?: string };
     } catch {
-      // ignore non-JSON error bodies
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
     }
     throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   }
   return JSON.parse(text) as T;
+}
+
+
+export interface FirewallRule {
+  action: string;
+  source?: string | null;
+  destination?: string | null;
+  protocol?: string | null;
+  port?: number | null;
+  comment?: string | null;
 }
 
 export async function fetchHealth(): Promise<string> {
@@ -113,12 +123,48 @@ export async function applyDeviceConfig(id: string, config: DeviceConfig): Promi
   );
 }
 
+export async function fetchFirewallRules(): Promise<{ rules: FirewallRule[] }> {
+  return parseJson<{ rules: FirewallRule[] }>(await request("/api/firewall"));
+}
+
+export async function createFirewallRule(rule: FirewallRule): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request("/api/firewall", {
+      method: "POST",
+      body: JSON.stringify(rule),
+    }),
+  );
+}
+
+export async function updateFirewallRule(
+  index: number,
+  rule: FirewallRule,
+): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request(`/api/firewall/${encodeURIComponent(index)}`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }),
+  );
+}
+
+export async function deleteFirewallRule(index: number): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request(`/api/firewall/${encodeURIComponent(index)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
 export async function postTelemetry(frame: TelemetryFrame): Promise<{ accepted: boolean }> {
   return parseJson<{ accepted: boolean }>(await request("/api/v1/telemetry", {
     method: "POST",
     body: JSON.stringify(frame),
   }));
 }
+
+
+
 
 export type ConfigStreamMessage = DeviceConfig;
 

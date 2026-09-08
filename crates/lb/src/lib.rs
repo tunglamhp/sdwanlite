@@ -290,12 +290,23 @@ pub(crate) fn spawn_health_checker(
         return;
     }
     tokio::spawn(async move {
+        let mut prev_healthy: Vec<bool> = backends.iter().map(|b| b.is_healthy()).collect();
         loop {
             tokio::time::sleep(interval).await;
-            for be in &backends {
+            for (i, be) in backends.iter().enumerate() {
                 let ok = probe(be, &mode, timeout).await;
                 if be.set_healthy(ok) {
                     tracing::info!(pool = %pool_name, backend = %be.addr, healthy = ok, "backend health changed");
+                    if let Some(was) = prev_healthy.get(i) {
+                        if *was && !ok {
+                            tracing::warn!(pool = %pool_name, backend = %be.addr, "backend became unhealthy");
+                        } else if !*was && ok {
+                            tracing::info!(pool = %pool_name, backend = %be.addr, "backend recovered");
+                        }
+                        if let Some(slot) = prev_healthy.get_mut(i) {
+                            *slot = ok;
+                        }
+                    }
                 }
             }
         }

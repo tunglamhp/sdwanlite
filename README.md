@@ -1,7 +1,7 @@
 # SDWANLite
 
 SD-WAN control plane + edge agent written in Rust, with a React web UI.
-Clean-room, learning-oriented implementation. **Version 2.2.0**
+Clean-room, learning-oriented implementation. **Version 2.3.0**
 
 ## Kiến trúc
 
@@ -47,13 +47,20 @@ Kernel-affecting actions chỉ chạy khi có `--enable-live-actions`.
 | `POST /telemetry` | Edge agent gửi telemetry (uptime, links, flags) |
 | `GET /alerts` | Danh sách alert (ring buffer, tối đa 100) |
 
+## Thay đổi trong v2.3.0
+
+- **WAN Failover**: hỗ trợ thuật toán `failover`, tự động chuyển backend khi unhealthy, log transition và chỉ số unhealthy backends trên Dashboard.
+- **Firewall UI**: quản lý firewall rules qua web UI (view/add/update/delete), đồng bộ runtime với API `/api/firewall`.
+- **Samples page**: payload mẫu import cho devices, telemetry, firewall rules, LB snapshot.
+- **Auth tests**: bổ sung tích hợp kiểm tra Basic/Bearer và non-loopback hard-fail.
+
 ## Thay đổi trong v2.2.0
 
-- **Device CRUD hoàn chỉnh**: register, get/update/delete, áp cấu hình qua API.
-- **Alerts**: backend sinh alert khi flag chuyển trạng thái (không spam); hiển thị feed trên Dashboard.
-- **Web UI mới** (React thay Dioxus cũ): form Add device, config editor với nút Apply (tự tăng version, có xác nhận "verified"), Topology theo telemetry thật, Diagnostics chi tiết, chart băng thông TX/RX.
-- **Bảo mật**: bind loopback mặc định, auth bằng bearer token, `--enable-live-actions` để mở action kernel.
-- Kiểm thử: `cargo test` 38/38, `vitest` 17/17, lint + build sạch.
+ - **Device CRUD hoàn chỉnh**: register, get/update/delete, áp cấu hình qua API.
+ - **Alerts**: backend sinh alert khi flag chuyển trạng thái (không spam); hiển thị feed trên Dashboard.
+ - **Web UI mới** (React thay Dioxus cũ): form Add device, config editor với nút Apply (tự tăng version, có xác nhận "verified"), Topology theo telemetry thật, Diagnostics chi tiết, chart băng thông TX/RX.
+ - **Bảo mật**: bind loopback mặc định, auth bằng bearer token, `--enable-live-actions` để mở action kernel.
+ - Kiểm thử: `cargo test` 38/38, `vitest` 17/17, lint + build sạch.
 
 ## CI
 

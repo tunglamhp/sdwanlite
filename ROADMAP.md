@@ -2,7 +2,7 @@
 
 Multi-session development plan. Each session picks up from here.
 
-## ✅ Done (v1.0–v1.5)
+## ✅ Done (v1.0–v2.2.0)
 
 - [x] L4 TCP + L7 HTTP load balancer (round-robin/least-conn/random)
 - [x] TLS termination + hot-reload acceptors
@@ -14,16 +14,20 @@ Multi-session development plan. Each session picks up from here.
 - [x] BGP speaker (capabilities, route refresh, local-pref, multipath, RR)
 - [x] ACME HTTP-01 + DNS-01 (Cloudflare/DigitalOcean) + wildcard
 - [x] Prometheus /metrics + SSE /api/events
-- [x] Dioxus/WASM dashboard (sidebar, light/dark, topology drag/zoom)
 - [x] Firewall rules (config + LB enforcement)
 - [x] QoS bandwidth limits (config type)
 - [x] Alert event log (ring buffer)
 - [x] Docker + compose + systemd + GHCR
+- [x] Device CRUD + config apply/versioning
+- [x] Controller + edge agent model
+- [x] React web UI replacing Dioxus/WASM
+- [x] Topology, Diagnostics, Path Labels, Policies, BGP UI
+- [x] Bearer auth + loopback default + `--enable-live-actions`
 
 ## 🔲 v2.0.0 — flexiWAN-inspired features
 
 ### Firewall UI
-- [ ] Firewall rules table in Dioxus (view/add/toggle/delete)
+- [ ] Firewall rules table in React (view/add/toggle/delete)
 - [ ] Firewall rule enforcement in LB accept loop
 
 ### QoS
@@ -31,12 +35,11 @@ Multi-session development plan. Each session picks up from here.
 - [ ] QoS settings UI (per-pool bandwidth cap)
 
 ### WAN Failover
-- [ ] Auto-switch to healthy backend when primary goes down
-- [ ] Failover notification (alert + UI indicator)
+- [x] Auto-switch to healthy backend when primary goes down
+- [x] Failover notification (alert + UI indicator)
 
-### Alerts
-- [ ] Alert feed UI (real-time event list)
-- [ ] Webhook stub (POST to external URL on alert)
+### Samples / Testing
+- [x] Import-ready sample payloads for devices, telemetry, firewall, and LB
 
 ### Tunnel Management
 - [ ] Peer CRUD via REST API (add/remove/list at runtime)
@@ -55,8 +58,6 @@ Multi-session development plan. Each session picks up from here.
 
 ## Architecture Notes
 
-- 8 crates: core, lb, mesh, bgp, acme, app, web, + tests
-- ~5,500 lines Rust, 23 tests, 0 warnings
-- Frontend: Dioxus 0.7 WASM (crates/web, excluded from workspace)
-- Build: `dx build --platform web` → `web-dist/`
+- Crates: core, sdwan-core, sdwan-agent, lb, mesh, bgp, acme, app
+- Frontend: React + Vite + TypeScript (`web-ui/`)
 - CI: GitHub Actions (test + release + docker)

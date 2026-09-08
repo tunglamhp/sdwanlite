@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use futures_util::StreamExt as _;
 use sdwanlite_bgp::BgpSpeaker;
 use sdwanlite_lb::tcp::TcpLoadBalancer;
+use sdwanlite_core::FirewallRule;
 use sdwanlite_lb::HttpLoadBalancer;
 use serde::Serialize;
 use std::sync::Arc;
@@ -22,6 +23,9 @@ pub struct AppState {
     /// Per-pool runtime overrides (algorithm, max_conns, drain, hc params).
     pub pool_overrides: std::sync::Mutex<std::collections::HashMap<String, PoolConfigOverride>>,
     pub pool_overrides_path: std::path::PathBuf,
+    /// Runtime firewall rules that override the config file. When empty, the
+    /// config file rules are used.
+    pub firewall_rules: std::sync::Mutex<Vec<sdwanlite_core::FirewallRule>>,
 }
 
 /// Persisted per-pool overrides. `hc_*` apply on restart; the rest apply live.
@@ -60,6 +64,7 @@ struct TcpPoolView {
 struct HttpRouteView {
     host: String,
     path_prefix: String,
+    algorithm: &'static str,
     backends: usize,
 }
 
@@ -68,6 +73,9 @@ struct HttpPoolView {
     name: String,
     routes: Vec<HttpRouteView>,
 }
+
+
+
 
 #[derive(Serialize)]
 struct StatusView {
@@ -158,14 +166,11 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/tls/status", get(api_tls_status))
         .route("/api/acme/issue", post(api_acme_issue))
         .route("/api/alerts", get(api_alerts))
+        .route("/api/firewall", get(api_firewall_list).post(api_firewall_add))
         .route(
-            "/api/firewall",
-            get(api_firewall_list)
-                .post(api_firewall_add)
-                .delete(api_firewall_delete),
+            "/api/firewall/:index",
+            put(api_firewall_update).delete(api_firewall_delete),
         )
-        .route("/api/validate", post(api_validate))
-        .route("/api/bgp/rib", get(api_rib))
         .route(
             "/api/lb/tcp/:name/config",
             put(api_pool_config_put).get(api_pool_config_get),
@@ -781,9 +786,10 @@ async fn api_lb(
             routes: pool
                 .route_info()
                 .into_iter()
-                .map(|(host, path_prefix, backends)| HttpRouteView {
+                .map(|(host, path_prefix, backends, algorithm)| HttpRouteView {
                     host,
                     path_prefix,
+                    algorithm: algorithm.as_str(),
                     backends,
                 })
                 .collect(),
@@ -1297,37 +1303,91 @@ async fn api_alerts(
     axum::Json(serde_json::json!({ "count": list.len(), "events": list }))
 }
 
+fn effective_firewall_rules(state: &AppState) -> Vec<sdwanlite_core::FirewallRule> {
+    let runtime = state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if runtime.is_empty() {
+        state.config.firewall.clone()
+    } else {
+        runtime
+    }
+}
+
 async fn api_firewall_list(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-) -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "rules": state.config.firewall }))
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if !authorized(&state, &headers) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" })),
+        ));
+    }
+    let rules = effective_firewall_rules(&state);
+    axum::Json(serde_json::json!({ "rules": rules })).into_response()
 }
 
 async fn api_firewall_add(
-    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    axum::Json(_rule): axum::Json<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
-    if !authorized(&_state, &headers) {
-        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    axum::Json(rule): axum::Json<sdwanlite_core::FirewallRule>,
+) -> axum::response::Response {
+    if !authorized(&state, &headers) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" })),
+        ));
     }
-    // firewall rules are read from config; dynamic add requires restart
-    axum::Json(
-        serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; add to sdwanlite.toml and restart" }),
-    )
+    let mut rules = state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    rules.push(rule);
+    *state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()) = rules.clone();
+    axum::Json(serde_json::json!({ "ok": true, "rules": rules })).into_response()
+}
+
+async fn api_firewall_update(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(index): axum::extract::Path<usize>,
+    headers: axum::http::HeaderMap,
+    axum::Json(rule): axum::Json<sdwanlite_core::FirewallRule>,
+) -> axum::response::Response {
+    if !authorized(&state, &headers) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" })),
+        ));
+    }
+    let mut rules = state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if index >= rules.len() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "ok": false, "error": "not found" })),
+        ));
+    }
+    rules[index] = rule;
+    *state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()) = rules.clone();
+    axum::Json(serde_json::json!({ "ok": true, "rules": rules })).into_response()
 }
 
 async fn api_firewall_delete(
-    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(index): axum::extract::Path<usize>,
     headers: axum::http::HeaderMap,
-    axum::Json(_body): axum::Json<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
-    if !authorized(&_state, &headers) {
-        return axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+) -> axum::response::Response {
+    if !authorized(&state, &headers) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "ok": false, "error": "unauthorized" })),
+        ));
     }
-    axum::Json(
-        serde_json::json!({ "ok": false, "error": "firewall rules are config-managed; edit sdwanlite.toml and restart" }),
-    )
+    let mut rules = state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if index >= rules.len() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "ok": false, "error": "not found" })),
+        ));
+    }
+    rules.remove(index);
+    *state.firewall_rules.lock().unwrap_or_else(|p| p.into_inner()) = rules.clone();
+    axum::Json(serde_json::json!({ "ok": true, "rules": rules })).into_response()
 }
 
 async fn api_validate(

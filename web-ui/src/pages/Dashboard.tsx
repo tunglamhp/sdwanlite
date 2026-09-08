@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -10,6 +10,33 @@ import {
 } from "recharts";
 import { useSdwanStore } from "../store";
 import { formatUptime } from "../format";
+import { parseJson, request } from "../api";
+
+export interface LbPool {
+  name: string;
+  algorithm: string;
+  active_conns: number;
+  rejected_conns: number;
+  backends: Array<{
+    addr: string;
+    healthy: boolean;
+    active_conns: number;
+    total_conns: number;
+  }>;
+}
+
+export interface LbSnapshot {
+  tcp: LbPool[];
+  http: Array<{
+    name: string;
+    routes: Array<{
+      host: string;
+      path_prefix: string;
+      algorithm: string;
+      backends: number;
+    }>;
+  }>;
+}
 
 export default function Dashboard() {
   const deviceSummaries = useSdwanStore((state) => state.deviceSummaries);
@@ -21,10 +48,17 @@ export default function Dashboard() {
   const telemetryByDeviceId = useSdwanStore((state) => state.telemetryByDeviceId);
   const alerts = useSdwanStore((state) => state.alerts);
 
+  const [lb, setLb] = useState<LbSnapshot | null>(null);
+  const [lbError, setLbError] = useState<string | null>(null);
+
   useEffect(() => {
     loadDevices().catch(() => undefined);
     loadTelemetry().catch(() => undefined);
     loadAlerts().catch(() => undefined);
+    request("/api/lb")
+      .then((r): Promise<LbSnapshot> => parseJson<LbSnapshot>(r))
+      .then((lb) => setLb(lb))
+      .catch((e: unknown) => setLbError(e instanceof Error ? e.message : "failed to load lb"));
   }, [loadDevices, loadTelemetry, loadAlerts]);
 
   const signals = useMemo(() => {
@@ -55,10 +89,27 @@ export default function Dashboard() {
 
   const devices = deviceSummaries.length;
 
+  const hasFailoverPool =
+    !!lb &&
+    (lb.tcp.some((pool) => pool.algorithm === "failover") ||
+      lb.http.some((pool) => pool.routes.some((route) => route.algorithm === "failover")));
+
+  const unhealthyCount = useMemo(() => {
+    if (!lb) return 0;
+    let count = 0;
+    for (const pool of lb.tcp) {
+      for (const backend of pool.backends) {
+        if (!backend.healthy) count += 1;
+      }
+    }
+    return count;
+  }, [lb]);
+
   return (
     <div className="page">
       <h1>Dashboard</h1>
       {devicesError ? <div className="alert">{devicesError}</div> : null}
+      {lbError ? <div className="alert">{lbError}</div> : null}
       <div className="stats">
         <div className="card">
           <div className="card-label">Devices</div>
@@ -76,6 +127,12 @@ export default function Dashboard() {
           <div className="card-label">Total uptime</div>
           <div className="card-value">{formatUptime(signals.uptimeSecs)}</div>
         </div>
+        {hasFailoverPool ? (
+          <div className="card">
+            <div className="card-label">Unhealthy backends</div>
+            <div className={`card-value ${unhealthyCount > 0 ? "err" : "ok"}`}>{unhealthyCount}</div>
+          </div>
+        ) : null}
       </div>
 
       {chartData.length > 0 ? (
