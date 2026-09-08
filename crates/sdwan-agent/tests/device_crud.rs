@@ -3,7 +3,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use sdwan_agent::{controller_router, DeviceStore, RegisterResponse};
+use sdwan_agent::{controller_router, DeviceStore};
 use sdwan_core::{DeviceId, OrgId, SiteId};
 use std::sync::Arc;
 use tower::ServiceExt;
