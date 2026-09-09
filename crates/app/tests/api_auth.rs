@@ -15,8 +15,11 @@ use tower::ServiceExt;
 use sdwanlite_app::server::{self, AppState};
 use sdwanlite_core::{Config, PathPolicyStore};
 use sdwanlite_lb::AlertLog;
-
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn app() -> axum::Router {
     let state = Arc::new(AppState {
@@ -30,6 +33,7 @@ fn app() -> axum::Router {
         path_policy_path: std::env::temp_dir().join("sdwanlite-test-path-policy.json"),
         pool_overrides: Mutex::new(HashMap::new()),
         pool_overrides_path: std::env::temp_dir().join("sdwanlite-test-overrides.json"),
+        firewall_rules: Mutex::new(Vec::new()),
     });
     server::router(state).layer(from_fn(server::auth_middleware))
 }
@@ -48,7 +52,7 @@ async fn get(app: &axum::Router, uri: &str, auth: Option<&str>) -> StatusCode {
 
 #[tokio::test]
 async fn dashboard_api_rejects_unauthenticated() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     std::env::set_var("SDWANLITE_AUTH_USER", "admin");
     std::env::set_var("SDWANLITE_AUTH_PASS", "s3cret");
     std::env::set_var("SDWANLITE_API_TOKEN", "tok");
@@ -69,7 +73,7 @@ async fn dashboard_api_rejects_unauthenticated() {
 
 #[tokio::test]
 async fn dashboard_api_accepts_valid_basic() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     std::env::set_var("SDWANLITE_AUTH_USER", "admin");
     std::env::set_var("SDWANLITE_AUTH_PASS", "s3cret");
     std::env::set_var("SDWANLITE_API_TOKEN", "tok");
@@ -86,12 +90,11 @@ async fn dashboard_api_accepts_valid_basic() {
 
 #[tokio::test]
 async fn mutation_endpoints_accept_browser_basic_auth() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = env_lock();
     std::env::set_var("SDWANLITE_AUTH_USER", "admin");
     std::env::set_var("SDWANLITE_AUTH_PASS", "s3cret");
     std::env::set_var("SDWANLITE_API_TOKEN", "tok");
     let app = app();
-    // firewall add: config-managed message, but must pass authorization
     let rsp = app
         .clone()
         .oneshot(
@@ -100,20 +103,19 @@ async fn mutation_endpoints_accept_browser_basic_auth() {
                 .uri("/api/firewall")
                 .header("authorization", "Basic YWRtaW46czNjcmV0")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"action":"drop"}"#))
+                .body(Body::from(r#"{"action":"allow","port":80,"protocol":"tcp"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(rsp.status(), StatusCode::OK);
-    // same request without credentials is rejected by the middleware
     let rsp = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/firewall")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"action":"drop"}"#))
+                .body(Body::from(r#"{"action":"allow","port":80,"protocol":"tcp"}"#))
                 .unwrap(),
         )
         .await
@@ -123,9 +125,7 @@ async fn mutation_endpoints_accept_browser_basic_auth() {
 
 #[tokio::test]
 async fn mutation_endpoints_accept_bearer_when_basic_gate_absent() {
-    let _g = ENV_LOCK.lock().unwrap();
-    // Dev mode: no Basic credentials -> middleware passes everything,
-    // the mutation endpoints still require the bearer token.
+    let _g = env_lock();
     std::env::remove_var("SDWANLITE_AUTH_USER");
     std::env::remove_var("SDWANLITE_AUTH_PASS");
     std::env::set_var("SDWANLITE_API_TOKEN", "tok");
@@ -139,7 +139,7 @@ async fn mutation_endpoints_accept_bearer_when_basic_gate_absent() {
                 .uri("/api/firewall")
                 .header("authorization", "Bearer tok")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"action":"drop"}"#))
+                .body(Body::from(r#"{"action":"allow","port":80,"protocol":"tcp"}"#))
                 .unwrap(),
         )
         .await
@@ -153,12 +153,12 @@ async fn mutation_endpoints_accept_bearer_when_basic_gate_absent() {
                 .uri("/api/firewall")
                 .header("authorization", "Bearer wrong")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"action":"drop"}"#))
+                .body(Body::from(r#"{"action":"allow","port":80,"protocol":"tcp"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(denied.status(), StatusCode::OK); // passes middleware in dev mode
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
     let body = axum::body::to_bytes(denied.into_body(), 4096)
         .await
         .unwrap();

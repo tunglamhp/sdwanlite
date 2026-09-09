@@ -120,6 +120,13 @@ export interface ErrorBody {
   error: string;
   message?: string;
 }
+export interface AlertEvent {
+  id: number;
+  kind: string;
+  title: string;
+  detail?: string;
+  at: string;
+}
 
 export interface LinkSample {
   path_label: string;

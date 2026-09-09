@@ -20,6 +20,7 @@ use sdwan_core::{
     BootstrapToken, ConfigVersion, DeviceConfig, DeviceId, OrgId, SiteId, ValidatedConfig,
 };
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -67,13 +68,18 @@ impl AgentConfig {
         hostname: impl Into<String>,
     ) -> std::result::Result<Self, AgentError> {
         let url = controller_url.into();
-        // RFC 5737 / loopback guard. Non-loopback requires an explicit flag in main.rs.
-        if !(url.starts_with("http://127.0.0.1")
-            || url.starts_with("http://localhost")
-            || url.starts_with("http://[::1]"))
-        {
+        let host_ok = match url.rsplit_once("://") {
+            Some((_, rest)) => {
+                let host = rest.split('/').next().unwrap_or("");
+                host == "localhost"
+                    || host.starts_with("127.")
+                    || host.starts_with("[::1]")
+            }
+            None => false,
+        };
+        if !host_ok {
             return Err(AgentError::Internal(format!(
-                "controller_url must be loopback (got {url}) — pass --enable-live-actions to allow non-loopback"
+                "controller_url must be loopback or localhost (got {url})"
             )));
         }
         Ok(Self {

@@ -95,6 +95,7 @@ async fn main() -> Result<()> {
         path_policy_path: pp_path,
         pool_overrides: std::sync::Mutex::new(server::load_pool_overrides(&po_path)),
         pool_overrides_path: po_path,
+        firewall_rules: std::sync::Mutex::new(Vec::new()),
     });
 
     {

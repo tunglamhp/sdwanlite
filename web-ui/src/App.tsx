@@ -30,6 +30,7 @@ import QoS from "./pages/QoS";
 import BGP from "./pages/BGP";
 import Diagnostics from "./pages/Diagnostics";
 import SettingsPage from "./pages/Settings";
+import Samples from "./pages/Samples";
 
 const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -42,6 +43,7 @@ const nav = [
   { to: "/bgp", label: "BGP", icon: Network },
   { to: "/diagnostics", label: "Diagnostics", icon: Stethoscope },
   { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/samples", label: "Samples", icon: FileJson },
 ];
 
 const THEME_KEY = "sdwan.theme";
@@ -73,24 +75,18 @@ function Sidebar({ theme, toggle }: { theme: "light" | "dark"; toggle: () => voi
               key={item.to}
               to={item.to}
               className={`menu-item ${active ? "active" : ""}`}
-              aria-current={active ? "page" : undefined}
             >
-              <Icon size={16} aria-hidden />
+              <Icon size={18} />
               <span>{item.label}</span>
             </Link>
           );
         })}
       </nav>
-      <button
-        type="button"
-        className="theme-toggle"
-        onClick={toggle}
-        aria-label="Toggle theme"
-        title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-      >
-        {theme === "light" ? <Moon size={16} aria-hidden /> : <Sun size={16} aria-hidden />}
-        <span>{theme === "light" ? "Dark" : "Light"}</span>
-      </button>
+      <div className="theme">
+        <button type="button" onClick={toggle} aria-label="Toggle theme">
+          {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+        </button>
+      </div>
     </aside>
   );
 }
@@ -98,10 +94,8 @@ function Sidebar({ theme, toggle }: { theme: "light" | "dark"; toggle: () => voi
 function NotFound() {
   return (
     <div className="page">
-      <h1>Page not found</h1>
-      <p className="empty">
-        <Link to="/">Back to Dashboard</Link>
-      </p>
+      <h1>404</h1>
+      <p className="empty">Page not found.</p>
     </div>
   );
 }
@@ -135,6 +129,7 @@ function Layout() {
             <Route path="/bgp" element={<BGP />} />
             <Route path="/diagnostics" element={<Diagnostics />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/samples" element={<Samples />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>

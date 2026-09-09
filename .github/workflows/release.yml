@@ -14,12 +14,14 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: sdwanlited
-            archive: sdwanlited-${{ github.ref_name }}-linux-x64.tar.gz
+            agent: sdwan-agent
+            app: sdwanlited
+            archive: sdwanlite-${{ github.ref_name }}-linux-x64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: sdwanlited.exe
-            archive: sdwanlited-${{ github.ref_name }}-windows-x64.zip
+            agent: sdwan-agent.exe
+            app: sdwanlited.exe
+            archive: sdwanlite-${{ github.ref_name }}-windows-x64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,10 +35,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.archive }} ${{ matrix.artifact }}
+          tar czf ../../../${{ matrix.archive }} ${{ matrix.agent }} ${{ matrix.app }}
       - name: Package (windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact }}" -DestinationPath "${{ matrix.archive }}"
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.agent }}","target/${{ matrix.target }}/release/${{ matrix.app }}" -DestinationPath "${{ matrix.archive }}"
       - name: Create release and upload asset
         uses: softprops/action-gh-release@v2
         with:

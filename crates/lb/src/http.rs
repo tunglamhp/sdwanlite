@@ -89,11 +89,15 @@ impl HttpLoadBalancer {
     }
 
     /// (host, path_prefix, backend_count) per route.
-    pub fn route_info(&self) -> Vec<(String, String, usize)> {
+    pub fn route_info(&self) -> Vec<(String, String, usize, Algorithm)> {
         self.routes
             .iter()
-            .map(|r| (r.host.clone(), r.path_prefix.clone(), r.backends.len()))
+            .map(|r| (r.host.clone(), r.path_prefix.clone(), r.backends.len(), self.algo))
             .collect()
+    }
+    /// Load-balancing algorithm in use for this pool.
+    pub fn algorithm(&self) -> Algorithm {
+        self.algo
     }
 
     /// Set the maximum concurrent client connections (0 = unlimited).

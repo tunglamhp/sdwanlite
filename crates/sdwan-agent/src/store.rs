@@ -76,7 +76,7 @@ impl MemoryStore {
 impl Storage for MemoryStore {
     fn insert_device(&self, rec: &DeviceRecord) -> AgentResult<()> {
         let mut g = self.inner.lock().unwrap();
-        g.entry(rec.current.device_id).or_insert(rec.clone());
+        g.insert(rec.current.device_id, rec.clone());
         Ok(())
     }
 
@@ -253,6 +253,9 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
     let hostname: String = row.get(3)?;
     Ok(DeviceRecord {
         org_id: org_id_str.parse::<OrgId>().expect("invalid org_id in db"),
+        device_id: device_id_str
+            .parse::<DeviceId>()
+            .expect("invalid device_id in db"),
         site_id: site_id_str
             .parse::<SiteId>()
             .expect("invalid site_id in db"),
@@ -283,6 +286,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
 #[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
 pub struct DeviceRecord {
     pub org_id: OrgId,
+    pub device_id: DeviceId,
     pub site_id: SiteId,
     pub hostname: String,
     pub state: DeviceState,
@@ -297,6 +301,18 @@ pub struct DeviceRecord {
 pub struct DeviceStore {
     storage: Arc<dyn Storage>,
     broadcasts: Arc<Mutex<std::collections::HashMap<DeviceId, broadcast::Sender<DeviceConfig>>>>,
+    telemetry: Arc<Mutex<std::collections::HashMap<DeviceId, crate::telemetry::TelemetryFrame>>>,
+    alerts: Arc<Mutex<Vec<AlertEvent>>>,
+    alerted_flags: Arc<Mutex<std::collections::HashMap<DeviceId, std::collections::HashSet<String>>>>,
+}
+/// One controller alert (link down, degraded, ...). Newest last.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+pub struct AlertEvent {
+    pub id: u64,
+    pub kind: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub at: String,
 }
 
 impl DeviceStore {
@@ -305,6 +321,9 @@ impl DeviceStore {
         Arc::new(Self {
             storage: Arc::new(MemoryStore::new()),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            alerts: Arc::new(Mutex::new(Vec::new())),
+            alerted_flags: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -314,6 +333,9 @@ impl DeviceStore {
         Ok(Arc::new(Self {
             storage: Arc::new(backend),
             broadcasts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            telemetry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            alerts: Arc::new(Mutex::new(Vec::new())),
+            alerted_flags: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }))
     }
 
@@ -354,7 +376,46 @@ impl DeviceStore {
     pub async fn delete(&self, id: DeviceId) -> AgentResult<()> {
         self.storage.delete_device(id)?;
         self.broadcasts.lock().await.remove(&id);
+        self.telemetry.lock().await.remove(&id);
+        self.alerted_flags.lock().await.remove(&id);
         Ok(())
+    }
+    /// Update device metadata (only fields provided).
+    pub async fn update_meta(
+        &self,
+        id: DeviceId,
+        org_id: Option<OrgId>,
+        site_id: Option<SiteId>,
+        hostname: Option<String>,
+    ) -> AgentResult<DeviceRecord> {
+        let mut rec = self.storage.get_device(id)?;
+        if let Some(org) = org_id {
+            rec.org_id = org;
+        }
+        if let Some(site) = site_id {
+            rec.site_id = site;
+        }
+        if let Some(name) = hostname {
+            rec.hostname = name.clone();
+            rec.current.hostname = name;
+        }
+        self.storage.insert_device(&rec)?;
+        Ok(rec)
+    }
+
+    /// Flag keys that appeared since the previous telemetry frame (alert on
+    /// state transitions only, so a repeating flag does not spam alerts).
+    pub async fn new_alert_flags(
+        &self,
+        device_id: DeviceId,
+        keys: Vec<String>,
+    ) -> Vec<String> {
+        let mut guard = self.alerted_flags.lock().await;
+        let prev = guard.entry(device_id).or_default();
+        let fresh: Vec<String> = keys.iter().filter(|k| !prev.contains(*k)).cloned().collect();
+        prev.clear();
+        prev.extend(keys);
+        fresh
     }
 
     /// List all devices.
@@ -368,7 +429,42 @@ impl DeviceStore {
         frame: &crate::telemetry::TelemetryFrame,
     ) -> AgentResult<()> {
         self.storage.insert_telemetry(frame)?;
+        self.telemetry
+            .lock()
+            .await
+            .insert(frame.device_id.clone(), frame.clone());
         Ok(())
+    }
+    /// Latest telemetry frame per device (in-memory; P1 adds persistence reads).
+    pub async fn latest_telemetry(&self) -> Vec<crate::telemetry::TelemetryFrame> {
+        let guard = self.telemetry.lock().await;
+        guard.values().cloned().collect()
+    }
+    /// Append an alert to the ring buffer (keeps the newest 100).
+    pub async fn push_alert(&self, kind: &str, title: String, detail: Option<String>) {
+        let mut guard = self.alerts.lock().await;
+        let id = guard.last().map(|a| a.id + 1).unwrap_or(1);
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
+        guard.push(AlertEvent {
+            id,
+            kind: kind.to_string(),
+            title,
+            detail,
+            at,
+        });
+        if guard.len() > 100 {
+            let excess = guard.len() - 100;
+            guard.drain(0..excess);
+        }
+    }
+
+    /// All alerts, oldest first.
+
+    pub async fn alerts(&self) -> Vec<AlertEvent> {
+        self.alerts.lock().await.clone()
     }
 
     /// Subscribe to config pushes for a device.

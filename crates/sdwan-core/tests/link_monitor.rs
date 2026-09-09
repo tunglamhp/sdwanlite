@@ -148,7 +148,7 @@ fn validate_rejects_empty_interface_name() {
 
 #[test]
 fn validate_rejects_firewall_port_zero() {
-    let mut c = DeviceConfig {
+    let c = DeviceConfig {
         device_id: DeviceId::new(),
         org_id: OrgId::new(),
         site_id: SiteId::new(),
@@ -178,7 +178,7 @@ fn validate_rejects_firewall_port_zero() {
 
 #[test]
 fn validate_rejects_qos_dscp_out_of_range() {
-    let mut c = DeviceConfig {
+    let c = DeviceConfig {
         device_id: DeviceId::new(),
         org_id: OrgId::new(),
         site_id: SiteId::new(),

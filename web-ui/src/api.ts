@@ -1,4 +1,4 @@
-import type { DeviceSummary, DeviceRecord, DeviceConfig, ApplyResponse, TelemetryFrame } from "./types/sdwan";
+import type { AlertEvent, DeviceSummary, DeviceRecord, DeviceConfig, ApplyResponse, TelemetryFrame, RegisterRequest, RegisterResponse } from "./types/sdwan";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -11,7 +11,7 @@ function readToken(): string | null {
   }
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -27,18 +27,28 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
-async function parseJson<T>(res: Response): Promise<T> {
+export async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     let body: { error?: string; message?: string } = {};
     try {
       body = JSON.parse(text) as { error?: string; message?: string };
     } catch {
-      // ignore non-JSON error bodies
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
     }
     throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   }
   return JSON.parse(text) as T;
+}
+
+
+export interface FirewallRule {
+  action: string;
+  source?: string | null;
+  destination?: string | null;
+  protocol?: string | null;
+  port?: number | null;
+  comment?: string | null;
 }
 
 export async function fetchHealth(): Promise<string> {
@@ -47,6 +57,39 @@ export async function fetchHealth(): Promise<string> {
     throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   }
   return res.text();
+}
+export async function registerDevice(req: RegisterRequest): Promise<RegisterResponse> {
+  return parseJson<RegisterResponse>(
+    await request("/api/v1/devices/register", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  );
+}
+
+export async function updateDevice(
+  id: string,
+  meta: { org_id?: string; site_id?: string; hostname?: string },
+): Promise<unknown> {
+  return parseJson<unknown>(
+    await request(`/api/v1/devices/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(meta),
+    }),
+  );
+}
+
+export async function putDeviceConfig(id: string, config: DeviceConfig): Promise<unknown> {
+  return parseJson<unknown>(
+    await request(`/api/v1/devices/${encodeURIComponent(id)}/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  );
+}
+
+export async function fetchAlerts(): Promise<AlertEvent[]> {
+  return parseJson<AlertEvent[]>(await request("/api/v1/alerts"));
 }
 
 export async function fetchDevices(): Promise<DeviceSummary[]> {
@@ -67,6 +110,9 @@ export async function deleteDevice(id: string): Promise<void> {
 export async function fetchDeviceConfig(id: string): Promise<DeviceConfig> {
   return parseJson<DeviceConfig>(await request(`/api/v1/devices/${encodeURIComponent(id)}/config`));
 }
+export async function fetchTelemetry(): Promise<TelemetryFrame[]> {
+  return parseJson<TelemetryFrame[]>(await request("/api/v1/telemetry"));
+}
 
 export async function applyDeviceConfig(id: string, config: DeviceConfig): Promise<ApplyResponse> {
   return parseJson<ApplyResponse>(
@@ -77,12 +123,48 @@ export async function applyDeviceConfig(id: string, config: DeviceConfig): Promi
   );
 }
 
+export async function fetchFirewallRules(): Promise<{ rules: FirewallRule[] }> {
+  return parseJson<{ rules: FirewallRule[] }>(await request("/api/firewall"));
+}
+
+export async function createFirewallRule(rule: FirewallRule): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request("/api/firewall", {
+      method: "POST",
+      body: JSON.stringify(rule),
+    }),
+  );
+}
+
+export async function updateFirewallRule(
+  index: number,
+  rule: FirewallRule,
+): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request(`/api/firewall/${encodeURIComponent(index)}`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }),
+  );
+}
+
+export async function deleteFirewallRule(index: number): Promise<{ ok: boolean; rules: FirewallRule[] }> {
+  return parseJson<{ ok: boolean; rules: FirewallRule[] }>(
+    await request(`/api/firewall/${encodeURIComponent(index)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
 export async function postTelemetry(frame: TelemetryFrame): Promise<{ accepted: boolean }> {
   return parseJson<{ accepted: boolean }>(await request("/api/v1/telemetry", {
     method: "POST",
     body: JSON.stringify(frame),
   }));
 }
+
+
+
 
 export type ConfigStreamMessage = DeviceConfig;
 
@@ -101,7 +183,8 @@ export function openConfigStream(
   onError?: (err: Event) => void,
 ): WebSocket {
   const token = readToken();
-  const wsUrl = new URL(`${BASE.replace(/^http/, "ws")}/stream/config`);
+  const base = BASE ? BASE.replace(/^http/, "ws") : "";
+  const wsUrl = new URL(`${base}/stream/config`, window.location.origin);
   wsUrl.searchParams.set("device_id", deviceId);
   if (token) {
     wsUrl.searchParams.set("token", token);
